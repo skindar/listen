@@ -34,17 +34,26 @@ _FIELD_H = 24
 _SCROLL_X = 16
 _SCROLL_Y = 64
 _SCROLL_W = _WIN_W - 2 * _SCROLL_X
-_SCROLL_H = _WIN_H - _SCROLL_Y - 80
+_SCROLL_H = _WIN_H - _SCROLL_Y - 92
 
 _DESCRIPTION = (
     "Words recognized as the left column are auto-replaced with the right "
-    "one before pasting. An empty right field deletes the word."
+    "one before pasting; an empty right field deletes the word. Pasting a "
+    "multi-line list into a field splits it into rows, one line per row "
+    "(a list pasted into a right field fills the rows downward)."
 )
 
 _SHEET_W = 540
 _SHEET_H = 320
 _COL_W = 246
 _TV_H = 112
+
+
+class ListTextField(AppKit.NSTextField):
+    """Marker subclass: the window's performKeyEquivalent_ finds its row
+    fields by type (see the Cmd+V list-paste interception there)."""
+
+    pass
 
 
 class CorrectionsWindow(AppKit.NSWindow):
@@ -79,7 +88,7 @@ class CorrectionsWindow(AppKit.NSWindow):
         desc.setFont_(AppKit.NSFont.systemFontOfSize_(12))
         desc.setTextColor_(AppKit.NSColor.secondaryLabelColor())
         desc.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
-        desc.setFrame_(AppKit.NSMakeRect(_SCROLL_X, _WIN_H - 68, _SCROLL_W, 44))
+        desc.setFrame_(AppKit.NSMakeRect(_SCROLL_X, _WIN_H - 80, _SCROLL_W, 56))
         view.addSubview_(desc)
 
         self.scroll = AppKit.NSScrollView.alloc().initWithFrame_(
@@ -139,9 +148,13 @@ class CorrectionsWindow(AppKit.NSWindow):
     @objc.python_method
     def _rebuild_rows(self) -> None:
         """Recreate the row views from self._rows (structure changed)."""
+        # Drop the live-field list BEFORE unmounting the old views: their
+        # dying edit sessions fire controlTextDidEndEditing_ mid-rebuild,
+        # and the stale-field guard must reject them (else they clobber
+        # whatever the rebuild's caller just wrote).
+        self._row_fields = []
         for sub in list(self._container.subviews()):
             sub.removeFromSuperview()
-        self._row_fields = []
 
         width = self._container.frame().size.width
         field_w = int((width - 96) / 2)
@@ -199,7 +212,7 @@ class CorrectionsWindow(AppKit.NSWindow):
     @objc.python_method
     def _field(self, placeholder: str, frame) -> AppKit.NSTextField:
         """A plain, standard editable system text field — click and type."""
-        field = AppKit.NSTextField.alloc().initWithFrame_(frame)
+        field = ListTextField.alloc().initWithFrame_(frame)
         field.setBezeled_(True)
         field.setEditable_(True)
         field.setSelectable_(True)
@@ -260,6 +273,85 @@ class CorrectionsWindow(AppKit.NSWindow):
             self.performClose_(None)
         except Exception:
             log.exception("corrections done failed (recovered)")
+
+    # -- pasting a list straight into a field -------------------------------------
+
+    def performKeyEquivalent_(self, event) -> bool:
+        """Intercept Cmd+V aimed at a row field. While a field is being
+        edited the first responder is the shared field editor, so paste:
+        never reaches the field itself — this runs BEFORE menu key
+        equivalents. A multi-line clipboard becomes rows; a normal paste
+        falls through to the field editor via the Edit menu, untouched."""
+        try:
+            flags = event.modifierFlags()
+            if (
+                flags & AppKit.NSCommandKeyMask
+                and str(event.charactersIgnoringModifiers()) == "v"
+            ):
+                fr = self.firstResponder()
+                field = fr.delegate() if isinstance(fr, AppKit.NSTextView) else fr
+                if isinstance(field, ListTextField):
+                    pb = AppKit.NSPasteboard.generalPasteboard()
+                    text = str(
+                        pb.stringForType_(AppKit.NSPasteboardTypeString) or ""
+                    )
+                    if "\n" in text:
+                        self.handle_list_paste(field, text)
+                        return True
+        except Exception:
+            log.exception("corrections key-equivalent failed (recovered)")
+        return objc.super(CorrectionsWindow, self).performKeyEquivalent_(event)
+
+    @objc.python_method
+    def handle_list_paste(self, field: "ListTextField", text: str) -> None:
+        """A multi-line paste into a row field. Into a LEFT field: line 1
+        becomes this row's "heard as", the rest insert new rows below. Into
+        a RIGHT field: line 1..N fill this row's and the following rows'
+        "replace with" (missing rows are created with an empty left side)."""
+        lines = self._lines(text)
+        if not lines:
+            return
+        try:
+            i, _, side = str(field.identifier()).partition(":")
+            i = int(i)
+            self._sync_from_fields()
+            if side == "from":
+                if not str(self._rows[i].get("from", "")).strip():
+                    self._rows[i]["from"] = lines[0]  # empty row takes line 1
+                    new_lines = lines[1:]
+                else:  # a filled row is never clobbered — grow below it
+                    new_lines = lines
+                for k, extra in enumerate(new_lines):
+                    self._rows.insert(i + 1 + k, {"from": extra, "to": ""})
+            else:  # "to" — fill downward
+                for k, value in enumerate(lines):
+                    j = i + k
+                    while j >= len(self._rows):
+                        self._rows.append({"from": "", "to": ""})
+                    self._rows[j]["to"] = value
+            self._push()
+            # NOTE: _rows stays as-is (not re-read from the store) — an
+            # overflow right-paste creates empty-left rows that set_pairs
+            # keeps out of the matcher/file; the editor shows them until
+            # they get a left side or are deleted.
+            self._rebuild_rows()
+            self._scroll_to_bottom()
+            self._focus_after = (i, 0 if side == "from" else 1)
+            self.performSelector_withObject_afterDelay_(
+                "refocusAfterPaste:", None, 0.05
+            )
+        except Exception:
+            log.exception("corrections list paste failed (recovered)")
+
+    def refocusAfterPaste_(self, _sender) -> None:
+        try:
+            pos = getattr(self, "_focus_after", None)
+            if pos and self._row_fields:
+                i, s = pos
+                pair = self._row_fields[min(i, len(self._row_fields) - 1)]
+                self.makeFirstResponder_(pair[s])
+        except Exception:
+            log.exception("corrections refocus failed (recovered)")
 
     # -- bulk paste sheet --------------------------------------------------------
 
@@ -463,6 +555,11 @@ class CorrectionsWindow(AppKit.NSWindow):
         """A field lost focus (Tab, Enter, click elsewhere) — persist."""
         try:
             field = notification.object()
+            # A rebuild (list paste / row removal) unmounts fields; their
+            # dying edit sessions fire this notification with STALE values
+            # that must not overwrite what the rebuild just wrote.
+            if not any(field is l or field is r for l, r in self._row_fields):
+                return
             ident = str(field.identifier())
             i, _, side = ident.partition(":")
             i = int(i)
