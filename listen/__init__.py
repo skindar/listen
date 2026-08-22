@@ -1,0 +1,1 @@
+"""listen — minimal macOS on-device speech-to-text (menu bar)."""

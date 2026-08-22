@@ -1,0 +1,18 @@
+# build artifacts
+build/
+dist/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# environment
+.venv/
+
+# local state
+.DS_Store
+.claude/
+*.log
+
+# generated reports
+scripts/pilot-out/
+scripts/packs-out/
