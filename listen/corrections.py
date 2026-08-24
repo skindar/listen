@@ -24,12 +24,49 @@ from . import config
 
 log = logging.getLogger("listen")
 
-# Shown the first time the window opens (file absent) so the list is never an
-# empty mystery. Deleting a row writes the file — the seed never returns.
-SEED_PAIRS = [
-    {"from": "бреукас", "to": "brew cask"},
-    {"from": "гитхаб", "to": "GitHub"},
-]
+
+def parse_pairs_text(text: str) -> list[dict]:
+    """Parse dictionary file content: {"pairs": [...]} (our export format) or
+    a bare [...] of pair objects. Raises on anything unreadable — the caller
+    decides how to report it."""
+    data = json.loads(text)
+    if isinstance(data, dict):
+        data = data.get("pairs")
+    if not isinstance(data, list):
+        raise ValueError("expected {'pairs': [...]} or a bare [...]")
+    rows = []
+    for p in data:
+        if not isinstance(p, dict):
+            continue
+        src = str(p.get("from", "")).strip()
+        if not src:
+            continue
+        rows.append({"from": src, "to": str(p.get("to", "")).strip()})
+    return rows
+
+
+def merge_into(rows: list[dict], incoming: list[dict]) -> tuple[list[dict], int, int]:
+    """Merge pairs into a row list: a known "from" (case-insensitive) has its
+    "to" updated in place; new ones append. Returns (merged, updated, added).
+    Pure — the caller persists the result."""
+    index: dict[str, int] = {}
+    for i, row in enumerate(rows):
+        index.setdefault(str(row.get("from", "")).strip().lower(), i)
+    merged = [dict(r) for r in rows]
+    n_up = n_add = 0
+    for p in incoming:
+        src = str(p.get("from", "")).strip()
+        if not src:
+            continue
+        key = src.lower()
+        if key in index:
+            merged[index[key]]["to"] = str(p.get("to", "")).strip()
+            n_up += 1
+        else:
+            index[key] = len(merged)
+            merged.append({"from": src, "to": str(p.get("to", "")).strip()})
+            n_add += 1
+    return merged, n_up, n_add
 
 
 class Corrections:
@@ -54,7 +91,7 @@ class Corrections:
             if not isinstance(pairs, list):
                 raise ValueError("expected {'pairs': [...]}")
         except FileNotFoundError:
-            self._set(SEED_PAIRS)  # in-memory only — saved on the first edit
+            self._set([])  # no file yet — the dictionary starts empty
             return
         except Exception:
             log.exception("corrections unreadable, starting empty: %s", self._path)

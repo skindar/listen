@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 
-from listen.corrections import Corrections
+import pytest
+
+from listen.corrections import Corrections, merge_into, parse_pairs_text
 
 
 def _pairs(**kw):
@@ -13,13 +15,61 @@ def _pairs(**kw):
 # -- matching -------------------------------------------------------------------
 
 
-def test_no_file_seeds_example(tmp_path):
+def test_no_file_starts_empty(tmp_path):
+    """A fresh install shows NOTHING by default — the user's dictionary is
+    theirs alone (import brings one in)."""
     c = Corrections(tmp_path / "c.json")
-    assert c.pairs == [
-        {"from": "бреукас", "to": "brew cask"},
-        {"from": "гитхаб", "to": "GitHub"},
+    assert c.pairs == []
+    assert c.apply("термин бреукас важен") == "термин бреукас важен"
+
+
+# -- import/export helpers --------------------------------------------------------
+
+
+def test_parse_pairs_text_export_format():
+    rows = parse_pairs_text(json.dumps({"pairs": [{"from": "а", "to": "A"}]}))
+    assert rows == [{"from": "а", "to": "A"}]
+
+
+def test_parse_pairs_text_bare_list():
+    rows = parse_pairs_text('[{"from": "а", "to": "A"}, {"from": "б"}]')
+    assert rows == [{"from": "а", "to": "A"}, {"from": "б", "to": ""}]
+
+
+def test_parse_pairs_text_skips_junk():
+    rows = parse_pairs_text(
+        '[{"from": "", "to": "x"}, "nonsense", {"to": "y"}, {"from": "а"}]'
+    )
+    assert rows == [{"from": "а", "to": ""}]
+
+
+def test_parse_pairs_text_malformed_raises():
+    with pytest.raises(ValueError):
+        parse_pairs_text('{"rules": []}')
+    with pytest.raises(json.JSONDecodeError):
+        parse_pairs_text("not json")
+
+
+def test_merge_into_updates_in_place_and_appends():
+    rows = [{"from": "а", "to": "A"}, {"from": "б", "to": "B"}]
+    merged, n_up, n_add = merge_into(
+        rows, [{"from": "А", "to": "A2"}, {"from": "в", "to": "V"}]
+    )
+    assert merged == [
+        {"from": "а", "to": "A2"},
+        {"from": "б", "to": "B"},
+        {"from": "в", "to": "V"},
     ]
-    assert c.apply("термин бреукас важен") == "термин brew cask важен"
+    assert (n_up, n_add) == (1, 1)
+    assert rows == [{"from": "а", "to": "A"}, {"from": "б", "to": "B"}]  # pure
+
+
+def test_merge_into_dedupe_within_incoming():
+    merged, n_up, n_add = merge_into(
+        [], [{"from": "а", "to": "1"}, {"from": "А", "to": "2"}]
+    )
+    assert merged == [{"from": "а", "to": "2"}]  # later line wins
+    assert (n_up, n_add) == (1, 1)  # first appends, the duplicate updates it
 
 
 def test_identity_without_pairs(tmp_path):

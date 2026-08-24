@@ -20,10 +20,14 @@ body in try/except — a Python exception escaping into ObjC shows the macOS
 """
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import AppKit
 import objc
+
+from .corrections import merge_into, parse_pairs_text
 
 log = logging.getLogger("listen")
 
@@ -115,6 +119,20 @@ class CorrectionsWindow(AppKit.NSWindow):
         paste.setBezelStyle_(AppKit.NSBezelStyleRounded)
         paste.setFrame_(AppKit.NSMakeRect(_SCROLL_X + 40, 16, 120, 28))
         view.addSubview_(paste)
+
+        export = AppKit.NSButton.buttonWithTitle_target_action_(
+            "Export…", self, "exportAction:"
+        )
+        export.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        export.setFrame_(AppKit.NSMakeRect(196, 16, 92, 28))
+        view.addSubview_(export)
+
+        imp = AppKit.NSButton.buttonWithTitle_target_action_(
+            "Import…", self, "importAction:"
+        )
+        imp.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        imp.setFrame_(AppKit.NSMakeRect(296, 16, 92, 28))
+        view.addSubview_(imp)
 
         done = AppKit.NSButton.buttonWithTitle_target_action_(
             "Done", self, "doneAction:"
@@ -273,6 +291,77 @@ class CorrectionsWindow(AppKit.NSWindow):
             self.performClose_(None)
         except Exception:
             log.exception("corrections done failed (recovered)")
+
+    # -- export / import ------------------------------------------------------------
+
+    def exportAction_(self, _sender) -> None:
+        """Save the whole dictionary to a JSON file the user picks."""
+        try:
+            self._sync_from_fields()
+            self._push()
+            panel = AppKit.NSSavePanel.savePanel()
+            panel.setNameFieldStringValue_("listen-corrections.json")
+            panel.setCanCreateDirectories_(True)
+            if panel.runModal() != AppKit.NSModalResponseOK:
+                return
+            self._do_export(str(panel.url().path()), [
+                dict(p) for p in self._corrections.pairs
+            ])
+        except Exception:
+            log.exception("corrections export failed (recovered)")
+
+    @objc.python_method
+    def _do_export(self, path: str, pairs: list[dict]) -> None:
+        Path(path).write_text(
+            json.dumps({"pairs": pairs}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        log.info("corrections exported: %d pairs -> %s", len(pairs), path)
+
+    def importAction_(self, _sender) -> None:
+        """Load pairs from a JSON file (our export or a bare list); known
+        words get their replacement updated, new words are added."""
+        try:
+            panel = AppKit.NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(True)
+            panel.setCanChooseDirectories_(False)
+            panel.setAllowsMultipleSelection_(False)
+            try:
+                import UniformTypeIdentifiers
+
+                panel.setAllowedContentTypes_(
+                    [UniformTypeIdentifiers.UTType.typeWithFilenameExtension_("json")]
+                )
+            except Exception:
+                panel.setAllowedFileTypes_(["json"])
+            if panel.runModal() != AppKit.NSModalResponseOK:
+                return
+            try:
+                self._do_import(str(panel.url().path()))
+            except Exception:
+                log.exception("corrections import failed (recovered)")
+                alert = AppKit.NSAlert.alloc().init()
+                alert.setMessageText_("Could not read that file")
+                alert.setInformativeText_(
+                    "Expected a corrections export — JSON with a pairs list."
+                )
+                alert.runModal()
+        except Exception:
+            log.exception("corrections import panel failed (recovered)")
+
+    @objc.python_method
+    def _do_import(self, path: str) -> None:
+        incoming = parse_pairs_text(Path(path).read_text(encoding="utf-8"))
+        self._sync_from_fields()
+        self._rows, _n_up, _n_add = merge_into(self._rows, incoming)
+        self._push()
+        self._rows = [dict(p) for p in self._corrections.pairs]
+        self._rebuild_rows()
+        self._scroll_to_bottom()
+        log.info(
+            "corrections imported from %s: %d updated, %d added",
+            path, _n_up, _n_add,
+        )
 
     # -- pasting a list straight into a field -------------------------------------
 
@@ -515,18 +604,11 @@ class CorrectionsWindow(AppKit.NSWindow):
             if not left or len(left) != len(right):
                 return  # counts drifted since the button was armed
             self._sync_from_fields()
-            # Merge: an already-known "heard as" gets its "replace with"
-            # updated in place; genuinely new words become new rows.
-            index = {}
-            for i, row in enumerate(self._rows):
-                index.setdefault(str(row["from"]).strip().lower(), i)
-            for src, dst in zip(left, right):
-                key = src.lower()
-                if key in index:
-                    self._rows[index[key]]["to"] = dst
-                else:
-                    index[key] = len(self._rows)
-                    self._rows.append({"from": src, "to": dst})
+            # Merge (shared with Import): an already-known "heard as" gets its
+            # "replace with" updated in place; new words become new rows.
+            self._rows = merge_into(
+                self._rows, [{"from": s, "to": d} for s, d in zip(left, right)]
+            )[0]
             self._push()
             self._rows = [dict(p) for p in self._corrections.pairs]
             self._rebuild_rows()
