@@ -29,6 +29,7 @@ import AppKit
 import objc
 
 from .corrections import merge_into, parse_pairs_text
+from .safeaction import safe_action
 
 log = logging.getLogger("listen")
 
@@ -272,50 +273,42 @@ class CorrectionsWindow(AppKit.NSWindow):
 
     # -- actions ----------------------------------------------------------------
 
+    @safe_action("corrections add")
     def addAction_(self, _sender) -> None:
-        try:
-            self._sync_from_fields()
-            self._rows.append({"from": "", "to": ""})
-            self._rebuild_rows()
-            self._scroll_to_bottom()
-            # Focus the new left field on the next run-loop turn (changing
-            # the first responder while the button still tracks the click
-            # can be discarded).
-            self.performSelector_withObject_afterDelay_(
-                "focusNewRow:", None, 0.05
-            )
-        except Exception:
-            log.exception("corrections add failed (recovered)")
+        self._sync_from_fields()
+        self._rows.append({"from": "", "to": ""})
+        self._rebuild_rows()
+        self._scroll_to_bottom()
+        # Focus the new left field on the next run-loop turn (changing
+        # the first responder while the button still tracks the click
+        # can be discarded).
+        self.performSelector_withObject_afterDelay_(
+            "focusNewRow:", None, 0.05
+        )
 
+    @safe_action("corrections focusNewRow")
     def focusNewRow_(self, _sender) -> None:
-        try:
-            if self._row_fields:
-                self.makeFirstResponder_(self._row_fields[-1][0])
-        except Exception:
-            log.exception("corrections focusNewRow failed (recovered)")
+        if self._row_fields:
+            self.makeFirstResponder_(self._row_fields[-1][0])
 
+    @safe_action("corrections removeRow")
     def removeRow_(self, sender) -> None:
-        try:
-            i = int(sender.tag())
-            self._sync_from_fields()
-            if 0 <= i < len(self._rows):
-                del self._rows[i]
-            self._rebuild_rows()
-        except Exception:
-            log.exception("corrections removeRow failed (recovered)")
+        i = int(sender.tag())
+        self._sync_from_fields()
+        if 0 <= i < len(self._rows):
+            del self._rows[i]
+        self._rebuild_rows()
 
     def doneAction_(self, _sender) -> None:
         # Closing persists (windowWillClose_); Done is just one close path.
         self.performClose_(None)
 
+    @safe_action("corrections close")
     def windowWillClose_(self, _notification) -> None:
         """Single commit point: every close path (Done, ⌘W, red button)
         lands here. Sync the live fields and persist once."""
-        try:
-            self._sync_from_fields()
-            self._push()
-        except Exception:
-            log.exception("corrections close failed (recovered)")
+        self._sync_from_fields()
+        self._push()
 
     # -- export / import ------------------------------------------------------------
 
@@ -479,15 +472,13 @@ class CorrectionsWindow(AppKit.NSWindow):
         except Exception:
             log.exception("corrections list paste failed (recovered)")
 
+    @safe_action("corrections refocus")
     def refocusAfterPaste_(self, _sender) -> None:
-        try:
-            pos = getattr(self, "_focus_after", None)
-            if pos and self._row_fields:
-                i, s = pos
-                pair = self._row_fields[min(i, len(self._row_fields) - 1)]
-                self.makeFirstResponder_(pair[s])
-        except Exception:
-            log.exception("corrections refocus failed (recovered)")
+        pos = getattr(self, "_focus_after", None)
+        if pos and self._row_fields:
+            i, s = pos
+            pair = self._row_fields[min(i, len(self._row_fields) - 1)]
+            self.makeFirstResponder_(pair[s])
 
     # -- bulk paste sheet --------------------------------------------------------
 
@@ -524,151 +515,141 @@ class CorrectionsWindow(AppKit.NSWindow):
         scroll.setDocumentView_(tv)
         return tv
 
+    @safe_action("corrections paste-list sheet")
     def pasteListAction_(self, _sender) -> None:
         """Open the bulk-paste sheet: two lists in, pairs out (line to line)."""
-        try:
-            sheet = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-                AppKit.NSMakeRect(0, 0, _SHEET_W, _SHEET_H),
-                AppKit.NSTitledWindowMask,
-                AppKit.NSBackingStoreBuffered,
-                False,
-            )
-            sheet.setTitle_("Paste List")
-            sheet.setReleasedWhenClosed_(False)
-            view = AppKit.NSView.alloc().initWithFrame_(
-                AppKit.NSMakeRect(0, 0, _SHEET_W, _SHEET_H)
-            )
-            sheet.setContentView_(view)
+        sheet = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            AppKit.NSMakeRect(0, 0, _SHEET_W, _SHEET_H),
+            AppKit.NSTitledWindowMask,
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        sheet.setTitle_("Paste List")
+        sheet.setReleasedWhenClosed_(False)
+        view = AppKit.NSView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, _SHEET_W, _SHEET_H)
+        )
+        sheet.setContentView_(view)
 
-            head = AppKit.NSTextField.labelWithString_(
-                "Paste your two lists — line N on the left is auto-replaced "
-                "with line N on the right. Blank lines are skipped."
-            )
-            head.setFont_(AppKit.NSFont.systemFontOfSize_(12))
-            head.setTextColor_(AppKit.NSColor.secondaryLabelColor())
-            head.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
-            head.setFrame_(AppKit.NSMakeRect(16, 262, _SHEET_W - 32, 40))
-            view.addSubview_(head)
+        head = AppKit.NSTextField.labelWithString_(
+            "Paste your two lists — line N on the left is auto-replaced "
+            "with line N on the right. Blank lines are skipped."
+        )
+        head.setFont_(AppKit.NSFont.systemFontOfSize_(12))
+        head.setTextColor_(AppKit.NSColor.secondaryLabelColor())
+        head.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
+        head.setFrame_(AppKit.NSMakeRect(16, 262, _SHEET_W - 32, 40))
+        view.addSubview_(head)
 
-            self._sheet_left = self._sheet_textview(
-                AppKit.NSMakeRect(16, 122, _COL_W, _TV_H)
-            )
-            self._sheet_right = self._sheet_textview(
-                AppKit.NSMakeRect(16 + _COL_W + 16, 122, _COL_W, _TV_H)
-            )
-            view.addSubview_(self._sheet_left.enclosingScrollView())
-            view.addSubview_(self._sheet_right.enclosingScrollView())
+        self._sheet_left = self._sheet_textview(
+            AppKit.NSMakeRect(16, 122, _COL_W, _TV_H)
+        )
+        self._sheet_right = self._sheet_textview(
+            AppKit.NSMakeRect(16 + _COL_W + 16, 122, _COL_W, _TV_H)
+        )
+        view.addSubview_(self._sheet_left.enclosingScrollView())
+        view.addSubview_(self._sheet_right.enclosingScrollView())
 
-            for x, title in ((16, "Heard as — one per line"),
-                             (16 + _COL_W + 16, "Replace with — one per line")):
-                lab = AppKit.NSTextField.labelWithString_(title)
-                lab.setFont_(AppKit.NSFont.boldSystemFontOfSize_(11))
-                lab.setTextColor_(AppKit.NSColor.secondaryLabelColor())
-                lab.setFrame_(AppKit.NSMakeRect(x, 242, _COL_W, 16))
-                view.addSubview_(lab)
+        for x, title in ((16, "Heard as — one per line"),
+                         (16 + _COL_W + 16, "Replace with — one per line")):
+            lab = AppKit.NSTextField.labelWithString_(title)
+            lab.setFont_(AppKit.NSFont.boldSystemFontOfSize_(11))
+            lab.setTextColor_(AppKit.NSColor.secondaryLabelColor())
+            lab.setFrame_(AppKit.NSMakeRect(x, 242, _COL_W, 16))
+            view.addSubview_(lab)
 
-            self._sheet_left_count = AppKit.NSTextField.labelWithString_("0 lines")
-            self._sheet_left_count.setFont_(AppKit.NSFont.systemFontOfSize_(11))
-            self._sheet_left_count.setTextColor_(AppKit.NSColor.tertiaryLabelColor())
-            self._sheet_left_count.setFrame_(AppKit.NSMakeRect(16, 102, _COL_W, 14))
-            view.addSubview_(self._sheet_left_count)
-            self._sheet_right_count = AppKit.NSTextField.labelWithString_("0 lines")
-            self._sheet_right_count.setFont_(AppKit.NSFont.systemFontOfSize_(11))
-            self._sheet_right_count.setTextColor_(AppKit.NSColor.tertiaryLabelColor())
-            self._sheet_right_count.setFrame_(
-                AppKit.NSMakeRect(16 + _COL_W + 16, 102, _COL_W, 14)
-            )
-            view.addSubview_(self._sheet_right_count)
+        self._sheet_left_count = AppKit.NSTextField.labelWithString_("0 lines")
+        self._sheet_left_count.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+        self._sheet_left_count.setTextColor_(AppKit.NSColor.tertiaryLabelColor())
+        self._sheet_left_count.setFrame_(AppKit.NSMakeRect(16, 102, _COL_W, 14))
+        view.addSubview_(self._sheet_left_count)
+        self._sheet_right_count = AppKit.NSTextField.labelWithString_("0 lines")
+        self._sheet_right_count.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+        self._sheet_right_count.setTextColor_(AppKit.NSColor.tertiaryLabelColor())
+        self._sheet_right_count.setFrame_(
+            AppKit.NSMakeRect(16 + _COL_W + 16, 102, _COL_W, 14)
+        )
+        view.addSubview_(self._sheet_right_count)
 
-            self._sheet_hint = AppKit.NSTextField.labelWithString_(
-                "The line counts must match."
-            )
-            self._sheet_hint.setFont_(AppKit.NSFont.systemFontOfSize_(11))
-            self._sheet_hint.setTextColor_(AppKit.NSColor.systemRedColor())
-            self._sheet_hint.setAlignment_(AppKit.NSCenterTextAlignment)
-            self._sheet_hint.setHidden_(True)
-            self._sheet_hint.setFrame_(AppKit.NSMakeRect(16, 66, _SHEET_W - 32, 16))
-            view.addSubview_(self._sheet_hint)
+        self._sheet_hint = AppKit.NSTextField.labelWithString_(
+            "The line counts must match."
+        )
+        self._sheet_hint.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+        self._sheet_hint.setTextColor_(AppKit.NSColor.systemRedColor())
+        self._sheet_hint.setAlignment_(AppKit.NSCenterTextAlignment)
+        self._sheet_hint.setHidden_(True)
+        self._sheet_hint.setFrame_(AppKit.NSMakeRect(16, 66, _SHEET_W - 32, 16))
+        view.addSubview_(self._sheet_hint)
 
-            cancel = AppKit.NSButton.buttonWithTitle_target_action_(
-                "Cancel", self, "sheetCancelAction:"
-            )
-            cancel.setBezelStyle_(AppKit.NSBezelStyleRounded)
-            cancel.setKeyEquivalent_("\x1b")
-            cancel.setFrame_(AppKit.NSMakeRect(16, 18, 110, 28))
-            view.addSubview_(cancel)
+        cancel = AppKit.NSButton.buttonWithTitle_target_action_(
+            "Cancel", self, "sheetCancelAction:"
+        )
+        cancel.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        cancel.setKeyEquivalent_("\x1b")
+        cancel.setFrame_(AppKit.NSMakeRect(16, 18, 110, 28))
+        view.addSubview_(cancel)
 
-            self._sheet_add = AppKit.NSButton.buttonWithTitle_target_action_(
-                "Add Pairs", self, "sheetAddAction:"
-            )
-            self._sheet_add.setBezelStyle_(AppKit.NSBezelStyleRounded)
-            self._sheet_add.setKeyEquivalent_("\r")
-            self._sheet_add.setEnabled_(False)
-            self._sheet_add.setFrame_(AppKit.NSMakeRect(_SHEET_W - 166, 18, 150, 28))
-            view.addSubview_(self._sheet_add)
+        self._sheet_add = AppKit.NSButton.buttonWithTitle_target_action_(
+            "Add Pairs", self, "sheetAddAction:"
+        )
+        self._sheet_add.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        self._sheet_add.setKeyEquivalent_("\r")
+        self._sheet_add.setEnabled_(False)
+        self._sheet_add.setFrame_(AppKit.NSMakeRect(_SHEET_W - 166, 18, 150, 28))
+        view.addSubview_(self._sheet_add)
 
-            self._sheet_win = sheet
-            self.beginSheet_completionHandler_(sheet, None)
-            # Focus the left list once the sheet has settled (same tracking
-            # caveat as the + button).
-            self.performSelector_withObject_afterDelay_("sheetFocus:", None, 0.05)
-        except Exception:
-            log.exception("corrections paste-list sheet failed (recovered)")
+        self._sheet_win = sheet
+        self.beginSheet_completionHandler_(sheet, None)
+        # Focus the left list once the sheet has settled (same tracking
+        # caveat as the + button).
+        self.performSelector_withObject_afterDelay_("sheetFocus:", None, 0.05)
 
+    @safe_action("corrections sheet focus")
     def sheetFocus_(self, _sender) -> None:
-        try:
-            if getattr(self, "_sheet_win", None) is not None:
-                self._sheet_win.makeFirstResponder_(self._sheet_left)
-        except Exception:
-            log.exception("corrections sheet focus failed (recovered)")
+        if getattr(self, "_sheet_win", None) is not None:
+            self._sheet_win.makeFirstResponder_(self._sheet_left)
 
+    @safe_action("corrections sheet textDidChange")
     def textDidChange_(self, _notification) -> None:
         """Live line counts; Add is armed only when both lists line up."""
-        try:
-            if getattr(self, "_sheet_win", None) is None:
-                return
-            nl = len(self._lines(str(self._sheet_left.string())))
-            nr = len(self._lines(str(self._sheet_right.string())))
-            self._sheet_left_count.setStringValue_(
-                f"{nl} line{'s' if nl != 1 else ''}"
-            )
-            self._sheet_right_count.setStringValue_(
-                f"{nr} line{'s' if nr != 1 else ''}"
-            )
-            ok = nl > 0 and nl == nr
-            self._sheet_hint.setHidden_(ok or nl == 0 or nr == 0)
-            self._sheet_add.setEnabled_(ok)
-            self._sheet_add.setTitle_(
-                f"Add {nl} Pair{'s' if nl != 1 else ''}" if ok else "Add Pairs"
-            )
-        except Exception:
-            log.exception("corrections sheet textDidChange failed (recovered)")
+        if getattr(self, "_sheet_win", None) is None:
+            return
+        nl = len(self._lines(str(self._sheet_left.string())))
+        nr = len(self._lines(str(self._sheet_right.string())))
+        self._sheet_left_count.setStringValue_(
+            f"{nl} line{'s' if nl != 1 else ''}"
+        )
+        self._sheet_right_count.setStringValue_(
+            f"{nr} line{'s' if nr != 1 else ''}"
+        )
+        ok = nl > 0 and nl == nr
+        self._sheet_hint.setHidden_(ok or nl == 0 or nr == 0)
+        self._sheet_add.setEnabled_(ok)
+        self._sheet_add.setTitle_(
+            f"Add {nl} Pair{'s' if nl != 1 else ''}" if ok else "Add Pairs"
+        )
 
+    @safe_action("corrections sheet add")
     def sheetAddAction_(self, _sender) -> None:
-        try:
-            left = self._lines(str(self._sheet_left.string()))
-            right = self._lines(str(self._sheet_right.string()))
-            if not left or len(left) != len(right):
-                return  # counts drifted since the button was armed
-            self._sync_from_fields()
-            # Merge (shared with Import): an already-known "heard as" gets its
-            # "replace with" updated in place; new words become new rows.
-            self._rows = merge_into(
-                self._rows, [{"from": s, "to": d} for s, d in zip(left, right)]
-            )[0]
-            self._push()
-            self._rows = [dict(p) for p in self._corrections.pairs]
-            self._rebuild_rows()
-            self._scroll_to_bottom()
-            self._close_sheet()
-        except Exception:
-            log.exception("corrections sheet add failed (recovered)")
+        left = self._lines(str(self._sheet_left.string()))
+        right = self._lines(str(self._sheet_right.string()))
+        if not left or len(left) != len(right):
+            return  # counts drifted since the button was armed
+        self._sync_from_fields()
+        # Merge (shared with Import): an already-known "heard as" gets its
+        # "replace with" updated in place; new words become new rows.
+        self._rows = merge_into(
+            self._rows, [{"from": s, "to": d} for s, d in zip(left, right)]
+        )[0]
+        self._push()
+        self._rows = [dict(p) for p in self._corrections.pairs]
+        self._rebuild_rows()
+        self._scroll_to_bottom()
+        self._close_sheet()
 
+    @safe_action("corrections sheet cancel")
     def sheetCancelAction_(self, _sender) -> None:
-        try:
-            self._close_sheet()
-        except Exception:
-            log.exception("corrections sheet cancel failed (recovered)")
+        self._close_sheet()
 
     @objc.python_method
     def _close_sheet(self) -> None:
@@ -680,23 +661,21 @@ class CorrectionsWindow(AppKit.NSWindow):
 
     # -- field delegate -----------------------------------------------------------
 
+    @safe_action("corrections endEdit")
     def controlTextDidEndEditing_(self, notification) -> None:
         """A field lost focus (Tab, Enter, click elsewhere). We just keep the
         working copy in sync — persistence happens once, on close/Done."""
-        try:
-            field = notification.object()
-            # A rebuild (list paste / row removal) unmounts fields; their
-            # dying edit sessions fire this notification with STALE values
-            # that must not overwrite what the rebuild just wrote.
-            if not any(field is l or field is r for l, r in self._row_fields):
-                return
-            ident = str(field.identifier())
-            i, _, side = ident.partition(":")
-            i = int(i)
-            if side in ("from", "to") and 0 <= i < len(self._rows):
-                self._rows[i][side] = str(field.stringValue())
-        except Exception:
-            log.exception("corrections endEdit failed (recovered)")
+        field = notification.object()
+        # A rebuild (list paste / row removal) unmounts fields; their
+        # dying edit sessions fire this notification with STALE values
+        # that must not overwrite what the rebuild just wrote.
+        if not any(field is l or field is r for l, r in self._row_fields):
+            return
+        ident = str(field.identifier())
+        i, _, side = ident.partition(":")
+        i = int(i)
+        if side in ("from", "to") and 0 <= i < len(self._rows):
+            self._rows[i][side] = str(field.stringValue())
 
     # -- helpers -----------------------------------------------------------------
 

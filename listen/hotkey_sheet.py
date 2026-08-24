@@ -21,6 +21,8 @@ import logging
 import AppKit
 import objc
 
+from .safeaction import safe_action
+
 log = logging.getLogger("listen")
 
 # (PANEL_WIDTH / 2) - small offsets; tuned by eye for a compact dialog.
@@ -122,30 +124,22 @@ class HotkeySheet(AppKit.NSPanel):
 
     # -- actions ------------------------------------------------------------
 
+    @safe_action("hotkey sheet cancel")
     def cancelAction_(self, _sender) -> None:
-        try:
-            self._app.cancel_hotkey_capture()
-        except Exception:
-            log.exception("hotkey sheet cancel failed (recovered)")
+        self._app.cancel_hotkey_capture()
 
+    @safe_action("hotkey sheet assign")
     def assignAction_(self, _sender) -> None:
-        try:
-            self._app.confirm_hotkey_capture()
-        except Exception:
-            log.exception("hotkey sheet assign failed (recovered)")
+        self._app.confirm_hotkey_capture()
 
     # -- Esc anywhere in the panel also cancels ----------------------------
 
+    @safe_action("hotkey sheet cancel")
     def cancelOperation_(self, _sender) -> None:
-        try:
-            self._app.cancel_hotkey_capture()
-        except Exception:
-            log.exception("hotkey sheet cancelOperation failed (recovered)")
+        self._app.cancel_hotkey_capture()
 
+    @safe_action("hotkey sheet close")
     def windowWillClose_(self, _notification) -> None:
         # Close box clicked (and any other close path). Don't re-enter via
         # orderOut_: just tell the App to abandon the capture.
-        try:
-            self._app.cancel_hotkey_capture()
-        except Exception:
-            log.exception("hotkey sheet windowWillClose failed (recovered)")
+        self._app.cancel_hotkey_capture()
