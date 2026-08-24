@@ -52,8 +52,23 @@ class Server:
         # Set when the server reaches READY or FAILED, so worker threads wait
         # on it instead of polling self._state.
         self._ready_event = threading.Event()
+        # Called (from the server's background thread) on READY/FAILED, so the
+        # UI learns of state changes by event instead of polling self._state.
+        self._on_state = None
 
     # -- lifecycle ---------------------------------------------------------
+
+    def set_state_callback(self, cb) -> None:
+        """Register a no-arg callback fired on READY/FAILED (server thread)."""
+        self._on_state = cb
+
+    def _notify(self) -> None:
+        cb = self._on_state
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                log.exception("server state callback raised")
 
     @property
     def state(self) -> str:
@@ -86,6 +101,7 @@ class Server:
                 self._state = FAILED
                 self._error = str(exc)
             self._ready_event.set()  # wake ensure_ready() waiters
+            self._notify()
 
     def _spawn_and_wait(self) -> None:
         model = config.resolve_model_path()
@@ -167,6 +183,7 @@ class Server:
                             "nemo-speech ready on port %s", self._port
                         )
                         self._ready_event.set()
+                        self._notify()
                         return
             except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 # Not ready yet (connection refused / parsing a partial reply).

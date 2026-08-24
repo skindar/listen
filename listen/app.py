@@ -95,7 +95,6 @@ class App(AppKit.NSObject):
         self._ax_ok = False
         self._reconnects = 0           # realtime reconnects in this recording
         self._reconnect_rt = None      # candidate client from a worker thread
-        self._warmed = False           # one throwaway session per server start
         self._base = st.LOADING
         self._error: str | None = None
         self._note: str | None = None  # transient tooltip note
@@ -114,7 +113,9 @@ class App(AppKit.NSObject):
         nsapp = AppKit.NSApplication.sharedApplication()
         # Menu-bar-only: no Dock icon, no Cmd+Tab presence.
         nsapp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
-        self.server.start()  # background; state flows in via _refresh_server_state
+        # State changes arrive via the callback (event-driven, not polled).
+        self.server.set_state_callback(self._on_server_state)
+        self.server.start()
         atexit.register(self.server.stop)
         self._ax_ok = permissions.accessibility_trusted()
         if self._ax_ok:
@@ -124,16 +125,15 @@ class App(AppKit.NSObject):
             try:
                 event = nsapp.nextEventMatchingMask_untilDate_inMode_dequeue_(
                     AppKit.NSEventMaskAny,
-                    AppKit.NSDate.dateWithTimeIntervalSinceNow_(0.25),
+                    AppKit.NSDate.dateWithTimeIntervalSinceNow_(1.0),
                     AppKit.NSDefaultRunLoopMode,
                     True,
                 )
                 if event is not None:
                     nsapp.sendEvent_(event)
                     nsapp.updateWindows()
-                self._poll_accessibility()
+                self._poll_accessibility()  # 1 Hz-throttled AX grant pickup
                 self.hotkey.ensure_enabled()
-                self._refresh_server_state()
             except Exception:
                 # An escaped exception here would leave the app via the py2app
                 # stub's "Launch error" dialog — log and keep the loop alive.
@@ -186,41 +186,27 @@ class App(AppKit.NSObject):
         )
 
     @objc.python_method
-    def _refresh_server_state(self) -> None:
-        if self._base not in (st.LOADING, st.READY):
-            return  # recording/transcribing/denied/error drive themselves
-        server_state = self.server.state
-        if server_state == server.READY:
-            self._set_base(st.READY)
-            if not self._warmed:
-                self._warmed = True
-                threading.Thread(target=self._warmup_probe, daemon=True).start()
-        elif server_state == server.LOADING:
-            self._set_base(st.LOADING)
-        elif server_state == server.FAILED:
-            self._error = self.server.error
-            self._set_base(st.ERROR)
+    def _on_server_state(self) -> None:
+        """Server state changed (called on the server's background thread).
+        Re-read and apply it on the main thread — never touch UI off-thread."""
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "applyServerState:", None, False
+        )
 
-    @objc.python_method
-    def _warmup_probe(self) -> None:
-        """A throwaway realtime session right after the server comes up.
-
-        Twice now the FIRST session on a freshly started server was closed by
-        the server mid-recording (cold model warm-up path); every later
-        session was fine. This sacrificial session absorbs that so the user's
-        first dictation isn't the one that dies.
-        """
+    def applyServerState_(self, _sender) -> None:
+        # Main-thread hop from the server callback. Recording/transcribing/
+        # denied/error drive their own state — only LOADING/READY listen here.
         try:
-            rt = RealtimeClient(
-                config.HOST, self.server.port, endpointing_ms=config.ENDPOINTING_MS
-            )
-            rt.connect(timeout=10)
-            rt.feed(b"\x00" * 16000)  # 0.5 s of silence
-            rt.finalize(timeout=5)
-            rt.close()
-            log.info("warmup probe ok")
+            if self._base not in (st.LOADING, st.READY):
+                return
+            server_state = self.server.state
+            if server_state == server.READY:
+                self._set_base(st.READY)
+            elif server_state == server.FAILED:
+                self._error = self.server.error
+                self._set_base(st.ERROR)
         except Exception:
-            log.info("warmup probe failed (ignored)", exc_info=True)
+            log.exception("error applying server state")
 
     @objc.python_method
     def _apply(self) -> None:

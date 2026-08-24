@@ -61,3 +61,11 @@ def test_ensure_ready_times_out():
     # event never set — must time out, not spin forever
     with pytest.raises(TimeoutError):
         s.ensure_ready(timeout=0.05)
+
+
+def test_state_callback_fires_on_notify():
+    s = _server_with(READY)
+    calls = []
+    s.set_state_callback(lambda: calls.append(s.state))
+    s._notify()
+    assert calls == [READY]
