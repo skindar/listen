@@ -22,20 +22,29 @@ def model_path() -> Path:
 
 
 def expected_sha256() -> str | None:
-    """The asr artifact hash from the bundled model-index.json, if readable."""
+    """The asr artifact hash from the bundled model-index.json.
+
+    Returns None if the index is well-formed but lists no hash for this
+    artifact (verification is then skipped). An unreadable or unparseable
+    index — a broken bundle — is logged loudly and also returns None: the
+    model file may still be valid, so we skip verification rather than block
+    the app from launching. The catch is narrowed so a genuine programming
+    error isn't swallowed.
+    """
     index = config.nemo_share_dir() / "model-index.json"
     try:
         data = json.loads(index.read_text(encoding="utf-8"))
-        for entry in data.get("models", []):
-            if entry.get("repo") != config.MODEL_REPO:
-                continue
-            for artifact in entry.get("artifacts", []):
-                if artifact.get("role") == "asr" and artifact.get(
-                    "filename"
-                ) == config.MODEL_FILENAME:
-                    return artifact.get("sha256")
-    except Exception:
-        log.exception("model-index.json unreadable; skipping sha256 check")
+    except (OSError, ValueError) as exc:
+        log.warning("model-index.json unreadable (%s); skipping sha256 check", exc)
+        return None
+    for entry in data.get("models", []):
+        if entry.get("repo") != config.MODEL_REPO:
+            continue
+        for artifact in entry.get("artifacts", []):
+            if artifact.get("role") == "asr" and artifact.get(
+                "filename"
+            ) == config.MODEL_FILENAME:
+                return artifact.get("sha256")
     return None
 
 
@@ -93,7 +102,8 @@ def download(progress=None, cancel=None) -> Path:
             ensure_verified(dest)
             log.info("model already present at %s", dest)
             if progress:
-                progress(dest.stat().st_size, dest.stat().st_size)
+                sz = dest.stat().st_size
+                progress(sz, sz)
             return dest
         except RuntimeError:
             log.warning("existing model failed verification; re-downloading")
@@ -104,6 +114,10 @@ def download(progress=None, cancel=None) -> Path:
         with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
             total = resp.length  # may be None
             downloaded = 0
+            # Report at ~1% granularity (every 4 MiB when the server omits
+            # Content-Length) instead of per 1 MiB chunk — a 707 MB download
+            # was ~707 progress hops, now ~100.
+            next_report = 0
             while True:
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
@@ -112,8 +126,12 @@ def download(progress=None, cancel=None) -> Path:
                     break
                 out.write(chunk)
                 downloaded += len(chunk)
-                if progress:
+                if progress and downloaded >= next_report:
                     progress(downloaded, total)
+                    if total:
+                        next_report = (downloaded * 100 // total + 1) * total // 100
+                    else:
+                        next_report = downloaded + (4 << 20)
     except Cancelled:
         part.unlink(missing_ok=True)
         raise
@@ -122,5 +140,6 @@ def download(progress=None, cancel=None) -> Path:
     ensure_verified(dest)
     log.info("model sha256 verified")
     if progress:
-        progress(dest.stat().st_size, dest.stat().st_size)
+        sz = dest.stat().st_size
+        progress(sz, sz)
     return dest
