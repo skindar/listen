@@ -153,8 +153,9 @@ class App(AppKit.NSObject):
                 if event is not None:
                     nsapp.sendEvent_(event)
                     nsapp.updateWindows()
-                self._poll_accessibility()  # 1 Hz-throttled AX grant pickup
-                self.hotkey.ensure_enabled()
+                self._poll_accessibility()  # 1 Hz-throttled AX grant/revoke pickup
+                if self._ax_ok:
+                    self.hotkey.ensure_enabled()
             except Exception:
                 # An escaped exception here would leave the app via the py2app
                 # stub's "Launch error" dialog — log and keep the loop alive.
@@ -173,16 +174,24 @@ class App(AppKit.NSObject):
 
     @objc.python_method
     def _poll_accessibility(self) -> None:
-        """Pick up an Accessibility grant without a restart (1 Hz)."""
-        if self._ax_ok:
-            return
+        """Pick up an Accessibility grant OR revocation without a restart (1 Hz).
+
+        Polling continues after a grant so a revocation is noticed too —
+        otherwise the icon would stay "ready" while the system silently
+        disables the event tap and the hotkey stops firing."""
         now = time.time()
         if now - self._last_ax_poll < 1.0:
             return
         self._last_ax_poll = now
-        if permissions.accessibility_trusted() and self._start_hotkey():
-            log.info("Accessibility granted — hotkey active")
-            self._ax_ok = True
+        trusted = permissions.accessibility_trusted()
+        if trusted and not self._ax_ok:
+            if self._start_hotkey():
+                log.info("Accessibility granted — hotkey active")
+                self._ax_ok = True
+                self._apply()
+        elif not trusted and self._ax_ok:
+            log.warning("Accessibility revoked — hotkey inactive")
+            self._ax_ok = False
             self._apply()
 
     # -- state --------------------------------------------------------------
