@@ -8,7 +8,9 @@ leftover; the user re-enables Start at Login once, for this app.
 """
 from __future__ import annotations
 
+import functools
 import logging
+import os
 import plistlib
 import subprocess
 import sys
@@ -21,9 +23,11 @@ AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
 AGENT_LOG = Path.home() / "Library" / "Logs" / "listen-agent.log"
 
 
+@functools.lru_cache(maxsize=1)
 def _app_executable() -> str:
     """The executable to launch at login: the running .app bundle if any, else
-    fall back to the python -m invocation used in dev."""
+    fall back to the python -m invocation used in dev. Fixed for the process
+    lifetime, so memoized."""
     exe = Path(sys.executable)
     # Inside our py2app bundle: .../listen.app/Contents/MacOS/python
     # (sys.executable is the embedded interpreter). Launch the bundle stub
@@ -43,8 +47,6 @@ def _in_bundle() -> bool:
 
 
 def _uid() -> str:
-    import os
-
     return str(os.getuid())
 
 
@@ -69,11 +71,22 @@ def _launches_current(program: str | None) -> bool:
     return program is not None and _app_executable() in program
 
 
+# is_on() only changes through this module's enable()/disable(), so cache it
+# and invalidate there — avoids a launchctl subprocess + plist read per menu open.
+_is_on_cache: bool | None = None
+
+
+def _invalidate_cache() -> None:
+    global _is_on_cache
+    _is_on_cache = None
+
+
 def is_on() -> bool:
     """True only when the agent is loaded AND launches this executable."""
-    if not _bootstrapped():
-        return False
-    return _launches_current(_plist_program())
+    global _is_on_cache
+    if _is_on_cache is None:
+        _is_on_cache = _bootstrapped() and _launches_current(_plist_program())
+    return _is_on_cache
 
 
 def remove_stale_agent() -> None:
@@ -91,33 +104,32 @@ def remove_stale_agent() -> None:
     disable()
 
 
-def _plist() -> str:
+def _program_arguments() -> list[str]:
+    """ProgramArguments for the agent plist: split the dev `python -m listen`
+    form into argv, keep the bundle form as a single binary path."""
     exe = _app_executable()
-    args = f"<string>{exe}</string>"
     if " -m listen" in exe:
-        # Split "python -m listen" into program + args.
         prog, rest = exe.split(" -m ", 1)
-        args = f"<string>{prog}</string>\n        <string>-m</string>\n        <string>{rest}</string>"
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>{AGENT_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        {args}
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>StandardOutPath</key><string>{AGENT_LOG}</string>
-    <key>StandardErrorPath</key><string>{AGENT_LOG}</string>
-</dict>
-</plist>
-"""
+        return [prog, "-m", rest]
+    return [exe]
+
+
+def _plist() -> bytes:
+    return plistlib.dumps(
+        {
+            "Label": AGENT_LABEL,
+            "ProgramArguments": _program_arguments(),
+            "RunAtLoad": True,
+            "StandardOutPath": str(AGENT_LOG),
+            "StandardErrorPath": str(AGENT_LOG),
+        },
+        fmt=plistlib.FMT_XML,
+    )
 
 
 def _bootstrap() -> None:
     AGENT_PLIST.parent.mkdir(parents=True, exist_ok=True)
-    AGENT_PLIST.write_text(_plist())
+    AGENT_PLIST.write_bytes(_plist())
     subprocess.run(
         ["launchctl", "bootstrap", f"gui/{_uid()}", str(AGENT_PLIST)],
         capture_output=True,
@@ -133,6 +145,7 @@ def enable() -> None:
     subprocess.run(
         ["launchctl", "kickstart", f"gui/{_uid()}/{AGENT_LABEL}"], capture_output=True
     )
+    _invalidate_cache()
 
 
 def disable() -> None:
@@ -140,3 +153,4 @@ def disable() -> None:
         ["launchctl", "bootout", f"gui/{_uid()}/{AGENT_LABEL}"], capture_output=True
     )
     AGENT_PLIST.unlink(missing_ok=True)
+    _invalidate_cache()
