@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -81,7 +83,7 @@ def ensure_verified(dest: Path) -> None:
     _marker(dest).write_text("verified\n")
 
 
-def download(progress=None, cancel=None) -> Path:
+def download(progress=None, cancel=None, max_retries: int = 5) -> Path:
     """Download the ASR model to ~/.listen/models.
 
     `progress(downloaded, total)` is called periodically (total may be None
@@ -90,6 +92,11 @@ def download(progress=None, cancel=None) -> Path:
 
     `cancel` is an optional threading.Event: if set mid-download, the partial
     file is deleted and Cancelled is raised, so a re-run starts fresh.
+
+    Resumes an interrupted download: a leftover `.part` is continued via an
+    HTTP Range request. A dropped connection is retried (resuming from the
+    partial) up to `max_retries` times with backoff, so a flaky network on a
+    707 MB download doesn't restart from zero.
     """
     url = config.model_url()
     dest = model_path()
@@ -108,33 +115,71 @@ def download(progress=None, cancel=None) -> Path:
         except RuntimeError:
             log.warning("existing model failed verification; re-downloading")
 
-    log.info("downloading %s -> %s", url, part)
-    req = urllib.request.Request(url, headers={"User-Agent": "listen/0.2"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
-            total = resp.length  # may be None
-            downloaded = 0
-            # Report at ~1% granularity (every 4 MiB when the server omits
-            # Content-Length) instead of per 1 MiB chunk — a 707 MB download
-            # was ~707 progress hops, now ~100.
-            next_report = 0
-            while True:
-                if cancel is not None and cancel.is_set():
-                    raise Cancelled()
-                chunk = resp.read(1 << 20)  # 1 MiB
-                if not chunk:
-                    break
-                out.write(chunk)
-                downloaded += len(chunk)
-                if progress and downloaded >= next_report:
-                    progress(downloaded, total)
-                    if total:
-                        next_report = (downloaded * 100 // total + 1) * total // 100
+    attempt = 0
+    while True:
+        have = part.stat().st_size if part.is_file() else 0
+        headers = {"User-Agent": "listen/0.2"}
+        if have:
+            headers["Range"] = f"bytes={have}-"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp, \
+                    open(part, "ab" if (have and resp.getcode() == 206) else "wb") as out:
+                status = resp.getcode()
+                if have and status == 206:
+                    # Server honors Range: append, total = already-have + remaining.
+                    remaining = resp.length
+                    total = (have + remaining) if remaining is not None else None
+                    downloaded = have
+                    log.info("resuming download from %d bytes", have)
+                else:
+                    # 200 (server ignored Range, or a fresh start): from scratch.
+                    total = resp.length
+                    downloaded = 0
+                    if have:
+                        log.info("server ignored Range; restarting download")
                     else:
-                        next_report = downloaded + (4 << 20)
-    except Cancelled:
-        part.unlink(missing_ok=True)
-        raise
+                        log.info("downloading %s -> %s", url, part)
+                # Report at ~1% granularity (every 4 MiB when total is unknown).
+                next_report = 0
+                while True:
+                    if cancel is not None and cancel.is_set():
+                        raise Cancelled()
+                    chunk = resp.read(1 << 20)  # 1 MiB
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if progress and downloaded >= next_report:
+                        progress(downloaded, total)
+                        if total:
+                            next_report = (downloaded * 100 // total + 1) * total // 100
+                        else:
+                            next_report = downloaded + (4 << 20)
+            break  # completed
+        except Cancelled:
+            part.unlink(missing_ok=True)
+            raise
+        except urllib.error.HTTPError as exc:
+            if exc.code == 416 and have > 0:
+                # Range unsatisfiable → the .part already has the full file
+                # (a prior run finished but crashed before rename). Finish.
+                log.info("download already complete (416); finishing")
+                break
+            raise RuntimeError(f"model download failed: HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            attempt += 1
+            if attempt > max_retries:
+                raise RuntimeError(
+                    f"model download failed after {max_retries} retries: {exc}"
+                ) from exc
+            backoff = min(2 ** (attempt - 1), 10)
+            log.warning(
+                "download interrupted (%s); retry %d/%d in %ds",
+                exc, attempt, max_retries, backoff,
+            )
+            time.sleep(backoff)
+            continue
     part.rename(dest)
     log.info("model downloaded: %s", dest)
     ensure_verified(dest)
