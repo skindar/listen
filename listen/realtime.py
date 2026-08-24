@@ -159,6 +159,12 @@ class RealtimeClient:
     def error(self) -> str | None:
         return self._error
 
+    @property
+    def is_alive(self) -> bool:
+        """True if the session is live (not closed, no error). Used right after
+        connect() to catch an on_dead that fired during the handshake."""
+        return not self._closed.is_set() and self._error is None
+
     # -- worker threads ----------------------------------------------------
 
     def _send_loop(self) -> None:

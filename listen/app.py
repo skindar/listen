@@ -113,6 +113,9 @@ class App(AppKit.NSObject):
         self._ax_ok = False
         self._reconnects = 0           # realtime reconnects in this recording
         self._reconnect_rt = None      # candidate client from a worker thread
+        self._starting = False          # a start worker is in flight (TCC prompt)
+        self._cancel_requested = False  # stop pressed during the start worker
+        self._last_ax_hint = 0.0        # throttle re-opening Accessibility settings
         self._base = st.LOADING
         self._error: str | None = None
         self._note: str | None = None  # transient tooltip note
@@ -262,26 +265,46 @@ class App(AppKit.NSObject):
 
     def toggleRecording_(self, _sender) -> None:
         try:
-            if not self._ax_ok or self.hotkey_logic.capture:
+            if not self._ax_ok:
+                self._ax_hint()  # not granted yet — tell the user, don't stay silent
+                return
+            if self.hotkey_logic.capture:
                 return
             if self._recording:
                 # ALWAYS allow stop — even if the server died mid-recording, the
                 # mic must be released. (The ready-check below is start-only.)
                 self._stop_recording()
                 return
+            if self._starting:
+                # A start worker is mid-flight (likely the mic TCC prompt). Let
+                # the user cancel it: the worker tears down if it hasn't started.
+                self._cancel_requested = True
+                return
             if self.server.state != server.READY:
                 return  # not ready yet — ignore politely
-            self._start_recording()
+            self._cancel_requested = False
+            self._starting = True
+            threading.Thread(target=self._start_recording_async, daemon=True).start()
         except Exception:
             log.exception("error in toggleRecording (recovered)")
 
     @objc.python_method
-    def _start_recording(self) -> None:
-        # Prefer streaming: open the realtime session first (no mic needed),
-        # then capture with frames piped straight to the server. If the
-        # session won't open, fall back to the batch path (buffer + transcribe
-        # at stop). No recording-length cap — dictation may run as long as the
-        # user talks; streaming keeps memory flat regardless of duration.
+    def _ax_hint(self) -> None:
+        """Hotkey pressed before Accessibility is granted — don't sit silent
+        (a silent wait was mistaken for a stalled download). Open the right
+        settings pane + a tooltip note; throttle re-opening the pane."""
+        self._set_note("Grant Accessibility to use the hotkey")
+        now = time.time()
+        if now - self._last_ax_hint >= 5.0:
+            self._last_ax_hint = now
+            permissions.open_accessibility_settings()
+
+    @objc.python_method
+    def _start_recording_async(self) -> None:
+        # Worker thread: the blocking I/O (rt.connect, recorder.start / the mic
+        # TCC prompt) MUST NOT run on the main run loop — blocking it lets macOS
+        # disable the CGEventTap so the hotkey stops firing. UI/clipboard work
+        # hops back to main (recordingStarted_).
         rt: RealtimeClient | None = None
         streaming = False
         try:
@@ -294,9 +317,18 @@ class App(AppKit.NSObject):
                 endpointing_ms=config.ENDPOINTING_MS,
             )
             rt.connect(timeout=5)
-            streaming = True
+            # on_dead can fire during connect; treat a session that's already
+            # gone as a connect failure (fall back to batch) instead of arming
+            # a recording into a dead client.
+            if not rt.is_alive:
+                rt.close()
+                rt = None
+            else:
+                streaming = True
         except Exception:
             log.warning("realtime session unavailable — batch fallback", exc_info=True)
+            if rt is not None:
+                rt.close()
             rt = None
             streaming = False
         try:
@@ -306,20 +338,61 @@ class App(AppKit.NSObject):
             self.recorder.start(on_frame=self._on_audio_frame if streaming else None)
         except Exception:
             log.exception("microphone unavailable")
+            self.recorder.stop()  # idempotent — release any half-open stream first
             if rt is not None:
                 rt.close()
-            self._error = "Microphone access denied"
-            self._set_base(st.MIC_DENIED)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micDenied:", None, False
+            )
             return
-        self._recording = True
-        self._rec_start = time.time()
+        if self._cancel_requested:
+            # The user pressed stop during the TCC prompt — tear it down without
+            # ever arming a recording.
+            self.recorder.stop()
+            if rt is not None:
+                rt.close()
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "startCancelled:", None, False
+            )
+            return
+        # Order matters: set the session fields before _recording flips True so a
+        # reader that sees _recording also sees the rest (GIL barrier).
         self._realtime = rt
         self._streaming = streaming
+        self._rec_start = time.time()
         self._reconnects = 0
-        if streaming:
-            self._live = LivePaste(paster=LivePaster())
-            self._live.paster.begin()
-        self._set_base(st.RECORDING)
+        self._recording = True
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "recordingStarted:", None, False
+        )
+
+    def recordingStarted_(self, _sender) -> None:
+        # Main-thread hop from the start worker: clipboard + icon/menu only.
+        try:
+            if not self._recording:
+                return  # stop-during-start already tore it down
+            self._starting = False
+            if self._streaming:
+                self._live = LivePaste(paster=LivePaster())
+                self._live.paster.begin()
+            self._set_base(st.RECORDING)
+        except Exception:
+            log.exception("error in recordingStarted (recovered)")
+
+    def micDenied_(self, _sender) -> None:
+        try:
+            self._starting = False
+            self._error = "Microphone access denied"
+            self._set_base(st.MIC_DENIED)
+        except Exception:
+            log.exception("error in micDenied (recovered)")
+
+    def startCancelled_(self, _sender) -> None:
+        try:
+            self._starting = False
+            self._set_base(st.READY)
+        except Exception:
+            log.exception("error in startCancelled (recovered)")
 
     @objc.python_method
     def _on_audio_frame(self, pcm: bytes) -> None:

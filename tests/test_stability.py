@@ -132,17 +132,38 @@ def test_recorder_stop_batch_snapshot_survives_late_frames():
 
 
 def test_start_recording_structure():
-    """Regression: an edit once moved _start_recording's tail (state setup,
-    RECORDING) into the body of _on_audio_frame — recordings then silently
-    never started. The forwarder must stay trivial; the state setup must
-    live in _start_recording."""
+    """The audio forwarder stays trivial (state setup never migrates into
+    _on_audio_frame); the blocking I/O (rt.connect, recorder.start — the mic
+    TCC prompt) runs on the start worker, not the main run loop (blocking main
+    lets macOS disable the CGEventTap so the hotkey stops firing); and the
+    UI/base state hops to the main-thread selector recordingStarted_."""
     import inspect
 
     from listen.app import App
 
-    start = inspect.getsource(App._start_recording)
     frame = inspect.getsource(App._on_audio_frame)
-    assert "self._recording = True" in start
-    assert "self._set_base(st.RECORDING)" in start
-    assert "self._realtime = rt" in start
     assert len(frame.splitlines()) <= 8  # just the docstring + forward
+
+    # ObjC selectors (python_selector) expose the raw function via .callable.
+    def _src(method):
+        return inspect.getsource(getattr(method, "callable", method))
+
+    async_src = _src(App._start_recording_async)
+    started_src = _src(App.recordingStarted_)
+    toggle_src = _src(App.toggleRecording_)
+
+    # Session/recording state and the blocking I/O live in the worker:
+    assert "self._recording = True" in async_src
+    assert "self._realtime = rt" in async_src
+    assert "rt.connect" in async_src
+    assert "recorder.start" in async_src
+
+    # UI/base state lives on the main-thread hop, guarded against a stop that
+    # already tore the recording down during the hop:
+    assert "self._set_base(st.RECORDING)" in started_src
+    assert "if not self._recording" in started_src
+    assert "rt.connect" not in started_src and "recorder.start" not in started_src
+
+    # The main toggle never does the blocking I/O — it spawns the worker:
+    assert "rt.connect" not in toggle_src and "recorder.start" not in toggle_src
+    assert "_start_recording_async" in toggle_src
