@@ -1,12 +1,12 @@
 """Insert text into the active field: clipboard + Cmd+V, then restore.
 
-Two flavors:
-  * paste(text)         — one-shot: write, Cmd+V, restore the user's clipboard
-    after 0.5 s (used by the batch fallback path).
-  * LivePaster          — for streaming dictation: save the clipboard once at
-    begin(), paste each finalized utterance as it arrives, restore the original
-    clipboard once at end(). Per-utterance restore would chain-clobber, so the
-    restore is deferred to the end of the session.
+One class, two usage patterns:
+  * one-shot   — paste(text): write, Cmd+V, restore the user's clipboard
+    after 0.5 s (the batch fallback path).
+  * streaming  — ClipboardPaster held across a dictation: begin() saves the
+    clipboard once, paste() fires each finalized utterance as it arrives,
+    end() restores the original clipboard once. Per-utterance restore would
+    chain-clobber, so the restore is deferred to the end of the session.
 
 The restore only happens if the pasteboard is unchanged since our last write —
 if the user copied something during the window, their copy wins.
@@ -21,38 +21,18 @@ import Quartz
 _KVK_ANSI_V = 0x09
 
 
-def paste(text: str) -> None:
-    pb = AppKit.NSPasteboard.generalPasteboard()
-    old = pb.stringForType_(AppKit.NSPasteboardTypeString)
-    pb.clearContents()
-    pb.setString_forType_(text, AppKit.NSPasteboardTypeString)
-    ours = pb.changeCount()  # anything above this is someone else's write
-    _send_cmd_v()
-    # Paste is async; restore the user's clipboard shortly after.
-    threading.Timer(0.5, _restore, args=(old, ours)).start()
+class ClipboardPaster:
+    """Write text to the clipboard, fire Cmd+V, and restore the original.
 
-
-def _restore(old: str | None, ours: int) -> None:
-    pb = AppKit.NSPasteboard.generalPasteboard()
-    if pb.changeCount() != ours:
-        return  # user copied something else meanwhile — don't clobber it
-    pb.clearContents()
-    if old:
-        pb.setString_forType_(old, AppKit.NSPasteboardTypeString)
-
-
-class LivePaster:
-    """Paste finalized utterances live during a streaming dictation.
-
-    The clipboard is captured once at begin() and restored once at end(); in
-    between, each utterance overwrites the clipboard and fires Cmd+V. Pasting
-    is spaced by the caller (the App drains its queue ~0.1 s apart) so the
-    target app consumes the clipboard before the next utterance overwrites it.
+    `restore_delay` is the default gap before the one-shot restore; end() can
+    override it per call (the streaming path restores 1–1.5 s after the last
+    utterance so the final Cmd+V lands before the clipboard is taken back).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, restore_delay: float = 0.5) -> None:
+        self._restore_delay = restore_delay
         self._old: str | None = None
-        self._ours: int | None = None
+        self._ours: int | None = None  # changeCount of our last write
         self._timer: threading.Timer | None = None
 
     def begin(self) -> None:
@@ -74,11 +54,14 @@ class LivePaster:
         self._ours = pb.changeCount()
         _send_cmd_v()
 
-    def end(self, delay: float = 1.0) -> None:
-        """Restore the original clipboard `delay` seconds after the last paste."""
+    def end(self, delay: float | None = None) -> None:
+        """Restore the original clipboard `delay` seconds after the last paste
+        (defaults to restore_delay)."""
         if self._timer is not None:
             self._timer.cancel()
-        self._timer = threading.Timer(delay, self._restore)
+        self._timer = threading.Timer(
+            delay if delay is not None else self._restore_delay, self._restore
+        )
         self._timer.start()
 
     def _restore(self) -> None:
@@ -88,6 +71,18 @@ class LivePaster:
         pb.clearContents()
         if self._old:
             pb.setString_forType_(self._old, AppKit.NSPasteboardTypeString)
+
+
+# The streaming dictation path holds one of these across the session.
+LivePaster = ClipboardPaster
+
+
+def paste(text: str) -> None:
+    """One-shot: write, Cmd+V, restore the user's clipboard after 0.5 s."""
+    p = ClipboardPaster(restore_delay=0.5)
+    p.begin()
+    p.paste(text)
+    p.end()
 
 
 def _send_cmd_v() -> None:

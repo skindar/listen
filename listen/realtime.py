@@ -131,11 +131,17 @@ class RealtimeClient:
         if self._closed.is_set() or self._dead_announced:
             return
         self._dead_announced = True
-        if self._on_dead is not None:
-            try:
-                self._on_dead()
-            except Exception:
-                log.exception("on_dead callback failed")
+        self._emit(self._on_dead)
+
+    def _emit(self, cb, *args) -> None:
+        """Invoke a user callback (receiver/worker thread) without letting an
+        exception escape — a callback raising here would kill the worker."""
+        if cb is None:
+            return
+        try:
+            cb(*args)
+        except Exception:
+            log.exception("realtime callback failed")
 
     # -- introspection -----------------------------------------------------
 
@@ -151,10 +157,9 @@ class RealtimeClient:
 
     def _send_loop(self) -> None:
         while not self._closed.is_set():
-            try:
-                chunk = self._send_q.get(timeout=0.2)
-            except queue.Empty:
-                continue
+            # Blocks until a chunk arrives or close() enqueues the None sentinel
+            # — no poll timeout, so frames ship with no wake-up latency.
+            chunk = self._send_q.get()
             if chunk is None:
                 break
             try:
@@ -191,11 +196,8 @@ class RealtimeClient:
         t = evt.get("type", "")
         if t == "conversation.item.input_audio_transcription.delta":
             frag = evt.get("delta") or ""
-            if frag and self._on_delta is not None:
-                try:
-                    self._on_delta(frag)
-                except Exception:
-                    log.exception("on_delta callback failed")
+            if frag:
+                self._emit(self._on_delta, frag)
         elif t == "conversation.item.input_audio_transcription.completed":
             txt = evt.get("transcript") or ""
             if txt:
@@ -204,13 +206,12 @@ class RealtimeClient:
                 # The completed carries the full final text, but with live
                 # delta pasting the text is already in the field — on_final is
                 # used only as a "flush any buffered fragments" signal.
-                if self._on_final is not None:
-                    try:
-                        self._on_final(txt)
-                    except Exception:
-                        log.exception("on_final callback failed")
+                self._emit(self._on_final, txt)
         elif t == "input_audio_buffer.committed":
             self._committed.set()
         elif t == "error":
             self._error = (evt.get("error") or {}).get("message") or "realtime error"
             log.warning("realtime error event: %s", self._error)
+            # An error ends the session — release finalize() waiters so they
+            # don't block for the full timeout on a session that won't commit.
+            self._committed.set()

@@ -109,15 +109,15 @@ class Recorder:
                 )
         if on_frame is not None:
             return b"", 0.0  # streaming — duration tracked by the client
-        try:
-            audio = (
-                np.concatenate(frames)
-                if frames
-                else np.zeros((0, config.CHANNELS), dtype="int16")
-            )
-        except Exception:
-            log.exception("error concatenating frames (ignored)")
-            audio = np.zeros((0, config.CHANNELS), dtype="int16")
+        # Batch: concatenate the captured frames. These are all the same
+        # int16 mono shape PortAudio handed us, so concatenate can't fail in
+        # practice — let an unexpected error surface to the caller's recovery
+        # instead of silently returning empty audio (a dropped transcript).
+        audio = (
+            np.concatenate(frames)
+            if frames
+            else np.zeros((0, config.CHANNELS), dtype="int16")
+        )
         duration = len(audio) / config.SAMPLE_RATE
         return self._wav_bytes(audio), duration
 
