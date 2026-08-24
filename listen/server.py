@@ -17,6 +17,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -48,6 +49,9 @@ class Server:
         self._error: str | None = None
         self._port: int | None = None
         self._log_file = None  # stderr of the server binary, for diagnosis
+        # Set when the server reaches READY or FAILED, so worker threads wait
+        # on it instead of polling self._state.
+        self._ready_event = threading.Event()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -70,6 +74,7 @@ class Server:
                 return
             self._state = LOADING
             self._error = None
+            self._ready_event.clear()
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self) -> None:
@@ -80,6 +85,7 @@ class Server:
             with self._lock:
                 self._state = FAILED
                 self._error = str(exc)
+            self._ready_event.set()  # wake ensure_ready() waiters
 
     def _spawn_and_wait(self) -> None:
         model = config.resolve_model_path()
@@ -160,8 +166,10 @@ class Server:
                         log.info(
                             "nemo-speech ready on port %s", self._port
                         )
+                        self._ready_event.set()
                         return
-            except Exception:
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+                # Not ready yet (connection refused / parsing a partial reply).
                 pass
             time.sleep(0.2)
         raise TimeoutError("nemo-speech server did not become ready")
@@ -172,64 +180,50 @@ class Server:
     # -- orphan reaping / pidfile -------------------------------------------
 
     def _reap_orphan_server(self) -> None:
-        """Kill nemo-speech servers left behind by dead app runs.
-
-        Two sweeps: the process our pidfile names (exact, catches our own
-        SIGKILLed runs), then any `nemo-speech serve` started with our exact
-        `--no-ui --no-warmup` flags — the signature of a Listen-launched
-        server from any copy/newer or older build. A manually started
-        `nemo-speech serve` (with its UI) is never touched. Safe because the
-        singleton lock guarantees no other Listen instance is alive.
+        """Kill the nemo-speech server our pidfile names, if it survived a
+        SIGKILLed app run. The singleton lock guarantees no other Listen
+        instance is alive, so the pidfile's process (verified to still be a
+        nemo-speech server) is the only orphan to reap.
         """
-        pids = self._orphan_pids()
-        for pid in pids:
+        pid = self._orphan_pid()
+        if pid is not None:
             log.info("reaping orphaned nemo-speech server (pid %d)", pid)
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
-                continue
-            for _ in range(20):  # up to 2 s, then escalate
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.1)
-            else:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                pid = None
+            if pid is not None:
+                for _ in range(20):  # up to 2 s, then escalate
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.1)
+                else:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
         config.SERVER_PIDFILE.unlink(missing_ok=True)
 
     @staticmethod
-    def _orphan_pids() -> list[int]:
-        pids: list[int] = []
-        # 1) the pidfile's process, if it is a nemo-speech server
+    def _orphan_pid() -> int | None:
+        """The pidfile's process, if it is still a nemo-speech server."""
         try:
             pid = int(config.SERVER_PIDFILE.read_text().strip())
         except (FileNotFoundError, ValueError):
-            pass
-        else:
-            try:
-                r = subprocess.run(
-                    ["ps", "-p", str(pid), "-o", "command="],
-                    capture_output=True, text=True,
-                )
-                command = r.stdout.strip()
-            except Exception:
-                command = ""
-            if "nemo-speech" in command and "serve" in command:
-                pids.append(pid)
-        # 2) any server carrying our exact launch signature
+            return None
         try:
             r = subprocess.run(
-                ["pgrep", "-f", r"nemo-speech serve .*--no-ui .*--no-warmup"],
+                ["ps", "-p", str(pid), "-o", "command="],
                 capture_output=True, text=True,
             )
-            pids += [int(p) for p in r.stdout.split() if p.isdigit()]
+            command = r.stdout.strip()
         except Exception:
-            pass
-        return sorted(set(pids))
+            return None
+        if "nemo-speech" in command and "serve" in command:
+            return pid
+        return None
 
     def _write_pidfile(self) -> None:
         try:
@@ -257,15 +251,15 @@ class Server:
             self._log_file = None
 
     def ensure_ready(self, timeout: float = 120.0) -> None:
-        """Block (from a worker thread) until READY; raise if FAILED."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._state == READY:
-                return
-            if self._state == FAILED:
-                raise RuntimeError(self._error or "server failed")
-            time.sleep(0.1)
-        raise TimeoutError("server did not become ready in time")
+        """Block (from a worker thread) until READY; raise if FAILED.
+
+        Waits on the readiness event instead of polling self._state — the
+        event is set exactly once per start cycle, when _wait_ready reaches
+        READY or _run records a FAILED."""
+        if not self._ready_event.wait(timeout):
+            raise TimeoutError("server did not become ready in time")
+        if self._state != READY:
+            raise RuntimeError(self._error or "server failed")
 
     # -- transcription -----------------------------------------------------
 

@@ -1,7 +1,9 @@
 """Server pieces that don't need a model: port picking and multipart body."""
 import socket
 
-from listen.server import Server, _free_port
+import pytest
+
+from listen.server import FAILED, READY, Server, _free_port
 
 
 def test_free_port_is_usable():
@@ -29,3 +31,33 @@ def test_multipart_with_language():
     body = Server._multipart(b"AUDIO", "bnd", "ru-RU")
     assert b'name="language"' in body
     assert b"ru-RU" in body
+
+
+# -- ensure_ready waits on the readiness event, not a poll ---------------------
+
+
+def _server_with(state, error=None):
+    s = Server()
+    s._state = state
+    s._error = error
+    return s
+
+
+def test_ensure_ready_returns_when_ready():
+    s = _server_with(READY)
+    s._ready_event.set()
+    s.ensure_ready(timeout=1.0)  # returns immediately, no raise
+
+
+def test_ensure_ready_raises_on_failed():
+    s = _server_with(FAILED, error="boom")
+    s._ready_event.set()
+    with pytest.raises(RuntimeError, match="boom"):
+        s.ensure_ready(timeout=1.0)
+
+
+def test_ensure_ready_times_out():
+    s = _server_with("loading")
+    # event never set — must time out, not spin forever
+    with pytest.raises(TimeoutError):
+        s.ensure_ready(timeout=0.05)
