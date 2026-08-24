@@ -294,21 +294,56 @@ class CorrectionsWindow(AppKit.NSWindow):
 
     # -- export / import ------------------------------------------------------------
 
+    @objc.python_method
+    def _run_save_panel(self, default_name: str) -> str | None:
+        """Ask the user where to save; None = cancelled. (The ObjC property
+        is URL, capital — the Swift-style lowercase url does not exist.)"""
+        panel = AppKit.NSSavePanel.savePanel()
+        panel.setNameFieldStringValue_(default_name)
+        panel.setCanCreateDirectories_(True)
+        if panel.runModal() != AppKit.NSModalResponseOK:
+            return None
+        url = panel.URL()
+        return str(url.path()) if url is not None else None
+
+    @objc.python_method
+    def _run_open_panel(self) -> str | None:
+        """Ask the user for a file; None = cancelled."""
+        panel = AppKit.NSOpenPanel.openPanel()
+        panel.setCanChooseFiles_(True)
+        panel.setCanChooseDirectories_(False)
+        panel.setAllowsMultipleSelection_(False)
+        try:
+            import UniformTypeIdentifiers
+
+            panel.setAllowedContentTypes_(
+                [UniformTypeIdentifiers.UTType.typeWithFilenameExtension_("json")]
+            )
+        except Exception:
+            panel.setAllowedFileTypes_(["json"])
+        if panel.runModal() != AppKit.NSModalResponseOK:
+            return None
+        url = panel.URL()
+        return str(url.path()) if url is not None else None
+
     def exportAction_(self, _sender) -> None:
         """Save the whole dictionary to a JSON file the user picks."""
         try:
             self._sync_from_fields()
             self._push()
-            panel = AppKit.NSSavePanel.savePanel()
-            panel.setNameFieldStringValue_("listen-corrections.json")
-            panel.setCanCreateDirectories_(True)
-            if panel.runModal() != AppKit.NSModalResponseOK:
-                return
-            self._do_export(str(panel.url().path()), [
-                dict(p) for p in self._corrections.pairs
-            ])
+            path = self._run_save_panel("listen-corrections.json")
+            if not path:
+                return  # cancelled
+            try:
+                self._do_export(path, [dict(p) for p in self._corrections.pairs])
+            except Exception:
+                log.exception("corrections export failed (recovered)")
+                alert = AppKit.NSAlert.alloc().init()
+                alert.setMessageText_("Could not save the file")
+                alert.setInformativeText_(path)
+                alert.runModal()
         except Exception:
-            log.exception("corrections export failed (recovered)")
+            log.exception("corrections export panel failed (recovered)")
 
     @objc.python_method
     def _do_export(self, path: str, pairs: list[dict]) -> None:
@@ -322,22 +357,11 @@ class CorrectionsWindow(AppKit.NSWindow):
         """Load pairs from a JSON file (our export or a bare list); known
         words get their replacement updated, new words are added."""
         try:
-            panel = AppKit.NSOpenPanel.openPanel()
-            panel.setCanChooseFiles_(True)
-            panel.setCanChooseDirectories_(False)
-            panel.setAllowsMultipleSelection_(False)
+            path = self._run_open_panel()
+            if not path:
+                return  # cancelled
             try:
-                import UniformTypeIdentifiers
-
-                panel.setAllowedContentTypes_(
-                    [UniformTypeIdentifiers.UTType.typeWithFilenameExtension_("json")]
-                )
-            except Exception:
-                panel.setAllowedFileTypes_(["json"])
-            if panel.runModal() != AppKit.NSModalResponseOK:
-                return
-            try:
-                self._do_import(str(panel.url().path()))
+                self._do_import(path)
             except Exception:
                 log.exception("corrections import failed (recovered)")
                 alert = AppKit.NSAlert.alloc().init()
