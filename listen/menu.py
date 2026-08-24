@@ -47,11 +47,6 @@ def rebuild(menu, target, snap: dict) -> None:
 
 def _hotkey_submenu(menu, target, snap: dict) -> None:
     sub = _submenu(menu, f"Hotkey: {snap['hotkey_name']}", enabled=snap["ax_ok"])
-    if snap["capturing"]:
-        # The sheet owns capture; the menu is closed during capture, but keep
-        # a guarded hint in case the menu is somehow re-opened mid-capture.
-        _item(sub, "Capturing — see window…", enabled=False)
-        return
     _item(sub, "Change…", "changeHotkey:", target, enabled=snap["ax_ok"])
     if snap["hotkey"] != dict(hotkey.HotkeyLogic.DEFAULT_SPEC):
         _item(sub, "Reset to Default", "resetHotkey:", target)

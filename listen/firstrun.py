@@ -24,12 +24,22 @@ _SUBLINE = "A one-time 707 MB download. After this, Listen works fully offline â
 _SUBLINE2 = "no account, no payment, ever."
 
 
+def _alert(title: str, message: str) -> None:
+    """A simple one-button alert (the only non-download UI we ever show)."""
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setAlertStyle_(AppKit.NSAlertStyleWarning)
+    alert.addButtonWithTitle_("OK")
+    alert.setMessageText_(title)
+    alert.setInformativeText_(message)
+    alert.runModal()
+
+
 class DownloadWindow(AppKit.NSObject):
     @objc.python_method
     def build(self) -> AppKit.NSWindow:
-        self._done = threading.Event()
+        self._cancel = threading.Event()
         self._ok = False
-        self._thread = None
+        self._error: str | None = None
 
         win = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((0.0, 0.0), (WIDTH, HEIGHT)),
@@ -90,18 +100,19 @@ class DownloadWindow(AppKit.NSObject):
 
     def startDownload_(self, sender) -> None:
         self._download_btn.setEnabled_(False)
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self._cancel.clear()
+        threading.Thread(target=self._run, daemon=True).start()
 
     @objc.python_method
     def _run(self) -> None:
         try:
-            model.download(progress=self._on_progress)
+            model.download(progress=self._on_progress, cancel=self._cancel)
             self._ok = True
+        except model.Cancelled:
+            self._ok = False  # user-initiated â€” no alert
         except Exception as exc:  # noqa: BLE001
             self._error = str(exc)
             self._ok = False
-        self._done.set()
         AppKit.NSApplication.sharedApplication().performSelectorOnMainThread_withObject_waitUntilDone_(
             "stopModal", None, False
         )
@@ -126,7 +137,7 @@ class DownloadWindow(AppKit.NSObject):
             self._pct.setStringValue_(f"{pct}%")
 
     def cancel_(self, sender) -> None:
-        self._done.set()
+        self._cancel.set()  # signal the download thread to stop
         AppKit.NSApplication.sharedApplication().stopModalWithCode_(AppKit.NSCancelButton)
 
     @objc.python_method
@@ -140,6 +151,8 @@ class DownloadWindow(AppKit.NSObject):
         # NSCancelButton used for cancel; stopModal (download done) returns 0.
         if code == AppKit.NSCancelButton:
             return False
+        if not self._ok and self._error:
+            _alert("Download failed", self._error)
         return self._ok
 
 

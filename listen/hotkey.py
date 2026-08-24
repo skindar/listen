@@ -231,11 +231,10 @@ class HotkeyLogic:
 class Hotkey:
     """Bridges CGEvents into HotkeyLogic on the main run loop thread."""
 
-    def __init__(self, logic: HotkeyLogic, on_toggle, on_capture=None,
+    def __init__(self, logic: HotkeyLogic, on_toggle,
                  on_capture_preview=None, on_capture_cancel=None) -> None:
         self.logic = logic
         self._on_toggle = on_toggle
-        self._on_capture = on_capture
         self._on_capture_preview = on_capture_preview
         self._on_capture_cancel = on_capture_cancel
         self._tap = None
@@ -270,13 +269,6 @@ class Hotkey:
         except Exception:
             log.exception("error in hotkey callback")
         return event
-
-    def is_enabled(self) -> bool:
-        """True if the event tap is live and the system hasn't disabled it."""
-        return bool(
-            self._tap is not None
-            and Quartz.CGEventTapIsEnabled(self._tap)
-        )
 
     def ensure_enabled(self) -> None:
         """Re-enable the tap if macOS disabled it (event-tap timeout).
@@ -314,7 +306,5 @@ class Hotkey:
             self._on_toggle()
         elif action == "preview" and self._on_capture_preview is not None:
             self._on_capture_preview(value)
-        elif action == "captured" and self._on_capture is not None:
-            self._on_capture(value)
         elif action == "cancelled" and self._on_capture_cancel is not None:
             self._on_capture_cancel()

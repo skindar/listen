@@ -11,6 +11,7 @@ import AppKit
 from . import state
 
 _ICON_SIZE = 16.0
+_DOT_SIZE = 14.0
 
 
 def _drawn(size: float, template: bool, color: AppKit.NSColor, draw_fn) -> AppKit.NSImage:
@@ -97,17 +98,17 @@ def _warn(alpha: float = 1.0) -> AppKit.NSImage:
     return _drawn(_ICON_SIZE, template=True, color=_black(alpha), draw_fn=draw)
 
 
-def _red_dot(dimen: float = 14.0, alpha: float = 1.0) -> AppKit.NSImage:
+def _red_dot(alpha: float = 1.0) -> AppKit.NSImage:
     def draw() -> None:
         inset = 2.0
         AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-            ((inset, inset), (dimen - 2 * inset, dimen - 2 * inset))
+            ((inset, inset), (_DOT_SIZE - 2 * inset, _DOT_SIZE - 2 * inset))
         ).fill()
 
     color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
         0.95, 0.2, 0.15, alpha
     )
-    return _drawn(dimen, template=False, color=color, draw_fn=draw)  # stays red
+    return _drawn(_DOT_SIZE, template=False, color=color, draw_fn=draw)  # stays red
 
 
 def _reduce_motion() -> bool:
@@ -127,8 +128,8 @@ class Icons:
         self._icon_mic = _mic(1.0)
         self._icon_mic_dim = _mic(0.4)
         self._icon_warn = _warn(1.0)
-        self._icon_dot = _red_dot(14.0, 1.0)
-        self._icon_dot_dim = _red_dot(14.0, 0.35)
+        self._icon_dot = _red_dot(1.0)
+        self._icon_dot_dim = _red_dot(0.35)
 
     def attach(self, button) -> None:
         self._button = button

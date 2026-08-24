@@ -13,6 +13,10 @@ from . import config
 log = logging.getLogger("listen")
 
 
+class Cancelled(Exception):
+    """Raised by download() when its cancel event is set."""
+
+
 def model_path() -> Path:
     return config.MODEL_DIR / config.MODEL_FILENAME
 
@@ -68,12 +72,15 @@ def ensure_verified(dest: Path) -> None:
     _marker(dest).write_text("verified\n")
 
 
-def download(progress=None) -> Path:
+def download(progress=None, cancel=None) -> Path:
     """Download the ASR model to ~/.listen/models.
 
     `progress(downloaded, total)` is called periodically (total may be None
     if the server omits Content-Length). Safe to call from any thread; the
     caller is responsible for marshalling progress onto the main thread.
+
+    `cancel` is an optional threading.Event: if set mid-download, the partial
+    file is deleted and Cancelled is raised, so a re-run starts fresh.
     """
     url = config.model_url()
     dest = model_path()
@@ -93,17 +100,23 @@ def download(progress=None) -> Path:
 
     log.info("downloading %s -> %s", url, part)
     req = urllib.request.Request(url, headers={"User-Agent": "listen/0.2"})
-    with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
-        total = resp.length  # may be None
-        downloaded = 0
-        while True:
-            chunk = resp.read(1 << 20)  # 1 MiB
-            if not chunk:
-                break
-            out.write(chunk)
-            downloaded += len(chunk)
-            if progress:
-                progress(downloaded, total)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
+            total = resp.length  # may be None
+            downloaded = 0
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                chunk = resp.read(1 << 20)  # 1 MiB
+                if not chunk:
+                    break
+                out.write(chunk)
+                downloaded += len(chunk)
+                if progress:
+                    progress(downloaded, total)
+    except Cancelled:
+        part.unlink(missing_ok=True)
+        raise
     part.rename(dest)
     log.info("model downloaded: %s", dest)
     ensure_verified(dest)

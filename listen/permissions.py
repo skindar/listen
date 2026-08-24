@@ -27,32 +27,17 @@ MIC_URL = (
 )
 
 
-def accessibility_trusted(prompt: bool = False) -> bool:
+def accessibility_trusted() -> bool:
     """Is this process a trusted Accessibility client? Never raises.
 
-    With prompt=True (unused by the app — the menu links are friendlier than
-    the system alert) macOS also shows its own grant dialog when denied.
+    We do not trigger the system grant dialog here — the menu's "Grant
+    Accessibility…" link to System Settings is friendlier and is what the
+    app actually uses to prompt.
     """
     try:
-        from ApplicationServices import (
-            AXIsProcessTrustedWithOptions,
-            kAXTrustedCheckOptionPrompt,
-        )
+        from ApplicationServices import AXIsProcessTrustedWithOptions
 
-        options = {kAXTrustedCheckOptionPrompt: prompt} if prompt else None
-        return bool(AXIsProcessTrustedWithOptions(options))
-    except Exception:
-        pass
-
-    try:
-        import ctypes
-
-        lib = ctypes.cdll.LoadLibrary(
-            "/System/Library/Frameworks/ApplicationServices.framework/"
-            "ApplicationServices"
-        )
-        lib.AXIsProcessTrusted.restype = ctypes.c_bool
-        return bool(lib.AXIsProcessTrusted())
+        return bool(AXIsProcessTrustedWithOptions(None))
     except Exception:
         log.exception("AXIsProcessTrusted unavailable")
         return False

@@ -692,11 +692,11 @@ class App(AppKit.NSObject):
         self._set_note(None)
 
     @objc.python_method
-    def _set_note(self, text: str | None, sticky: bool = False) -> None:
-        """A transient tooltip note; sticky ones wait for an explicit clear."""
+    def _set_note(self, text: str | None) -> None:
+        """A transient tooltip note; cleared after a few seconds."""
         self._note = text
         self._apply()
-        if text and not sticky:
+        if text:
             self.performSelector_withObject_afterDelay_("clearNote:", None, 4.0)
 
     def clearNote_(self, _sender) -> None:
@@ -729,7 +729,6 @@ class App(AppKit.NSObject):
     def _snapshot(self) -> dict:
         return {
             "ax_ok": self._ax_ok,
-            "capturing": self.hotkey_logic.capture,
             "mic_denied": self._base == st.MIC_DENIED,
             "error_line": (
                 f"⚠ {(self._error or 'error')[:60]}"

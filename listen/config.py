@@ -59,28 +59,31 @@ def _pkg_resources() -> Path:
     return Path(__file__).resolve().parent / "resources"
 
 
+def _resource_path(*parts: str) -> Path:
+    """Resolve a path under nemo-speech/, preferring the bundle then the pkg.
+
+    Works inside the .app bundle (Contents/Resources) and in dev (package
+    resources/) — the one place the bundle/pkg fallback is decided.
+    """
+    base = _bundle_resources()
+    if base is None:
+        base = _pkg_resources()
+    return base.joinpath("nemo-speech", *parts)
+
+
 def nemo_binary() -> Path:
     """Path to the nemo-speech executable."""
-    res = _bundle_resources()
-    if res is not None:
-        return res / "nemo-speech" / "bin" / "nemo-speech"
-    return _pkg_resources() / "nemo-speech" / "bin" / "nemo-speech"
+    return _resource_path("bin", "nemo-speech")
 
 
 def nemo_lib_dir() -> Path:
     """Directory holding nemo-speech dylibs (for DYLD_LIBRARY_PATH)."""
-    res = _bundle_resources()
-    if res is not None:
-        return res / "nemo-speech" / "lib"
-    return _pkg_resources() / "nemo-speech" / "lib"
+    return _resource_path("lib")
 
 
 def nemo_share_dir() -> Path:
     """Directory holding nemo-speech share data (model-index.json with sha256s)."""
-    res = _bundle_resources()
-    if res is not None:
-        return res / "nemo-speech" / "share" / "nemo-speech"
-    return _pkg_resources() / "nemo-speech" / "share" / "nemo-speech"
+    return _resource_path("share", "nemo-speech")
 
 
 # --- model -------------------------------------------------------------------
