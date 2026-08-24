@@ -150,6 +150,15 @@ class FakeWS:
     def send_binary(self, blob):
         self.sent.append(("binary", blob))
 
+    def send_ping(self):
+        self.sent.append(("ping", b""))
+
+    def start_keepalive(self, interval, deadline):
+        pass  # no real socket in the fake transport
+
+    def stop_keepalive(self):
+        pass
+
     def recv(self):
         if self._events:
             return self._events.pop(0)
@@ -310,3 +319,46 @@ def test_on_dead_not_fired_on_normal_close():
     c.close()  # normal close — must NOT fire on_dead
     time.sleep(0.3)
     assert not dead.is_set()
+
+
+# -- keepalive liveness probe (ws.py) --------------------------------------
+
+
+class _FakeSock:
+    def __init__(self):
+        self.closed = False
+        self.sent = []
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+    def close(self):
+        self.closed = True
+
+    def settimeout(self, _t):
+        pass
+
+
+def test_keepalive_closes_when_server_stops_responding():
+    """A server that keepalives but then goes silent past the deadline is
+    wedged — the socket is closed so the receiver's recv unblocks and dies."""
+    ws = WS()
+    ws._sock = _FakeSock()
+    ws._alive_seen = True            # server had been responding
+    ws._last_alive = time.monotonic() - 100  # long past the deadline
+    ws._keepalive_stop = threading.Event()
+    ws._keepalive_loop(interval=0.01, deadline=0.05)
+    assert ws._sock.closed
+
+
+def test_keepalive_disables_when_server_never_keepalives():
+    """A server that sends no control frame at all is treated as not
+    keepalive-capable: stop probing and DON'T close — a legitimate pause must
+    not look like a wedged server (the protocol is silent during a pause)."""
+    ws = WS()
+    ws._sock = _FakeSock()
+    ws._alive_seen = False
+    ws._keepalive_stop = threading.Event()
+    ws._keepalive_loop(interval=0.02, deadline=0.05)
+    assert not ws._sock.closed
+    assert ws._sock.sent  # it did send probe PINGs before giving up

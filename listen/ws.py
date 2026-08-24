@@ -16,9 +16,14 @@ Server→client frames are not masked.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import socket
 import struct
+import threading
+import time
+
+log = logging.getLogger("listen")
 
 OP_CONT = 0x0
 OP_TEXT = 0x1
@@ -33,6 +38,15 @@ class WS:
 
     def __init__(self) -> None:
         self._sock: socket.socket | None = None
+        # Liveness: the time we last saw a control frame (PING/PONG) from the
+        # server, and whether we've seen one at all. The keepalive uses these.
+        self._last_alive = 0.0
+        self._alive_seen = False
+        self._keepalive_stop: threading.Event | None = None
+        # The sender thread (audio) and the keepalive thread (PING) both call
+        # _send → sendall; without a lock their bytes could interleave on the
+        # socket and corrupt frames. Senders are serialized here.
+        self._send_lock = threading.Lock()
 
     def connect(self, host: str, port: int, path: str, timeout: float = 10.0) -> None:
         self._sock = socket.create_connection((host, port), timeout=timeout)
@@ -70,6 +84,64 @@ class WS:
     def send_text(self, text: str) -> None:
         self._send(text.encode("utf-8"), OP_TEXT)
 
+    def send_ping(self) -> None:
+        self._send(b"", OP_PING)
+
+    def _mark_alive(self) -> None:
+        self._last_alive = time.monotonic()
+        self._alive_seen = True
+
+    def start_keepalive(self, interval: float, deadline: float) -> None:
+        """Probe the server with PINGs and close the socket if it stops
+        responding. Self-disables if the server sends no control frames within
+        3 intervals (it doesn't keepalive) so we never false-positive on a
+        legitimate pause — the realtime protocol is silent during a pause, so
+        an idle timeout would otherwise tear down healthy dictation."""
+        self._keepalive_stop = threading.Event()
+        threading.Thread(
+            target=self._keepalive_loop, args=(interval, deadline), daemon=True
+        ).start()
+
+    def _keepalive_loop(self, interval: float, deadline: float) -> None:
+        stop = self._keepalive_stop
+        assert stop is not None
+        start = time.monotonic()
+        while not stop.wait(interval):
+            now = time.monotonic()
+            if not self._alive_seen:
+                # Probing: give the server a few intervals to PONG (or to send
+                # its own PING). If it never does, it doesn't keepalive — stop
+                # probing and rely on the recv/send error paths for death.
+                if now - start >= 3 * interval:
+                    return
+                try:
+                    self.send_ping()
+                except Exception:
+                    return
+                continue
+            if now - self._last_alive > deadline:
+                log.warning(
+                    "realtime server stopped responding for %.1fs — closing", deadline
+                )
+                self._force_close()
+                return
+            try:
+                self.send_ping()
+            except Exception:
+                return
+
+    def _force_close(self) -> None:
+        try:
+            if self._sock is not None:
+                self._sock.close()
+        except Exception:
+            pass
+
+    def stop_keepalive(self) -> None:
+        if self._keepalive_stop is not None:
+            self._keepalive_stop.set()
+            self._keepalive_stop = None
+
     def _send(self, payload: bytes, opcode: int) -> None:
         if self._sock is None:
             raise ConnectionError("not connected")
@@ -86,7 +158,10 @@ class WS:
             out += struct.pack("!Q", n)
         out += mask
         out += bytes(payload[i] ^ mask[i % 4] for i in range(n))
-        self._sock.sendall(bytes(out))
+        with self._send_lock:
+            if self._sock is None:
+                raise ConnectionError("not connected")
+            self._sock.sendall(bytes(out))
 
     def recv(self) -> tuple[int, bytes]:
         """Return (opcode, payload) for one complete message, reassembling
@@ -95,8 +170,10 @@ class WS:
         opcode, payload = self._recv_frame()
         if opcode == OP_PING:
             self._send(payload, OP_PONG)
+            self._mark_alive()  # a server PING proves the connection is up
             return self.recv()
         if opcode == OP_PONG:
+            self._mark_alive()  # our PING was answered
             return self.recv()
         if opcode == OP_CLOSE:
             return OP_CLOSE, b""
@@ -138,6 +215,7 @@ class WS:
         return buf
 
     def close(self) -> None:
+        self.stop_keepalive()
         if self._sock is not None:
             try:
                 # Send a close frame, best-effort.

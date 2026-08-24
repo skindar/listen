@@ -85,6 +85,12 @@ class RealtimeClient:
         self._receiver = threading.Thread(target=self._recv_loop, daemon=True)
         self._sender.start()
         self._receiver.start()
+        # A wedged server (TCP up, no frames) is otherwise indistinguishable
+        # from a quiet one; probe it. Self-disables if the server doesn't
+        # keepalive, so this can't false-positive on a long dictation pause.
+        self._ws.start_keepalive(
+            config.REALTIME_PING_INTERVAL, config.REALTIME_PING_DEADLINE
+        )
 
     def feed(self, pcm16: bytes) -> None:
         """Enqueue a PCM16 chunk for streaming. Non-blocking (PortAudio cb).

@@ -36,6 +36,11 @@ MIN_RECORD_SECONDS = 0.3  # shorter taps are ignored as accidental
 # streaming, so finished phrases paste live on natural pauses. Low enough to
 # fire on clause/sentence pauses, high enough not to split every word gap.
 ENDPOINTING_MS = 450
+# Liveness probe for the realtime WebSocket: send a PING every INTERVAL seconds;
+# if the server has shown it keepalives (PONGs our PING or sends its own PING)
+# but then stays silent past DEADLINE, the session is wedged and is closed.
+REALTIME_PING_INTERVAL = 8.0
+REALTIME_PING_DEADLINE = 20.0
 
 
 # --- resource resolution (works inside .app bundle and in dev) ---------------
