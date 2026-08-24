@@ -79,14 +79,6 @@ class DownloadWindow(AppKit.NSObject):
 
         self._pct = label("0%", ((20.0, HEIGHT - 124.0), (WIDTH - 40.0, 14.0)))
 
-        self._download_btn = AppKit.NSButton.buttonWithTitle_target_action_(
-            "Download", self, "startDownload:"
-        )
-        self._download_btn.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        self._download_btn.setKeyEquivalent_("\r")
-        self._download_btn.setFrame_(((WIDTH - 200.0, 16.0), (90.0, 24.0)))
-        view.addSubview_(self._download_btn)
-
         self._cancel_btn = AppKit.NSButton.buttonWithTitle_target_action_(
             "Cancel", self, "cancel:"
         )
@@ -99,7 +91,6 @@ class DownloadWindow(AppKit.NSObject):
         return win
 
     def startDownload_(self, sender) -> None:
-        self._download_btn.setEnabled_(False)
         self._cancel.clear()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -146,6 +137,12 @@ class DownloadWindow(AppKit.NSObject):
         nsapp.activateIgnoringOtherApps_(True)
         win = self.build()
         win.makeKeyAndOrderFront_(None)
+        # No Download button: start automatically on the modal run loop so the
+        # stopModal (on completion) lands inside it. The window just shows the
+        # progress bar (+ Cancel to abort) and closes itself when done.
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "startDownload:", None, False
+        )
         code = nsapp.runModalForWindow_(win)
         win.orderOut_(None)
         # NSCancelButton used for cancel; stopModal (download done) returns 0.
