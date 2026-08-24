@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import AppKit
@@ -66,6 +67,26 @@ def install_edit_menu() -> None:
     main.addItem_(root)
     AppKit.NSApp.setMainMenu_(main)
 
+
+@dataclass
+class LivePaste:
+    """Live-paste bookkeeping for one streaming recording, all main-thread.
+
+    These four fields share one lifecycle — created when a streaming session
+    starts, reset on the next one — so they're grouped here instead of spread
+    across the App. They deliberately outlive the realtime-session clear in
+    _stop_recording (self._realtime = None): the final flush drains the buffer
+    and LivePaster.end() restores the clipboard AFTER the session is gone,
+    so they cannot live in a "session" object cleared at stop.
+
+    `streamed` is the delta text since the last .completed, used to paste only
+    the trailing suffix the finalize added (e.g. the final period)."""
+    paster: LivePaster
+    buffer: str = ""
+    flush_pending: bool = False
+    streamed: str = ""
+
+
 class App(AppKit.NSObject):
     def init(self):
         self = objc.super(App, self).init()
@@ -88,10 +109,7 @@ class App(AppKit.NSObject):
         self._rec_start: float = 0.0
         self._streaming = False
         self._realtime: RealtimeClient | None = None
-        self._live: LivePaster | None = None
-        self._live_buffer: str = ""
-        self._live_flush_pending = False
-        self._live_streamed: str = ""  # delta text since the last completed
+        self._live: LivePaste | None = None  # set only in streaming mode
         self._ax_ok = False
         self._reconnects = 0           # realtime reconnects in this recording
         self._reconnect_rt = None      # candidate client from a worker thread
@@ -299,11 +317,8 @@ class App(AppKit.NSObject):
         self._streaming = streaming
         self._reconnects = 0
         if streaming:
-            self._live = LivePaster()
-            self._live.begin()
-            self._live_buffer = ""
-            self._live_flush_pending = False
-            self._live_streamed = ""
+            self._live = LivePaste(paster=LivePaster())
+            self._live.paster.begin()
         self._set_base(st.RECORDING)
 
     @objc.python_method
@@ -336,7 +351,7 @@ class App(AppKit.NSObject):
                 # we restore the clipboard after that has time to land.
                 self._flush_live(final=False)
                 if self._live is not None:
-                    self._live.end(1.5)
+                    self._live.paster.end(1.5)
                 if seconds < config.MIN_RECORD_SECONDS:
                     rt.close()
                     self._set_base(st.READY)  # too short — ignore
@@ -505,7 +520,7 @@ class App(AppKit.NSObject):
                 pass
         self._flush_live(final=True)  # keep any buffered words before teardown
         if self._live is not None:
-            self._live.end(1.0)
+            self._live.paster.end(1.0)
         self._error = message
         self._set_base(st.ERROR)
 
@@ -541,11 +556,14 @@ class App(AppKit.NSObject):
     def liveDelta_(self, fragment) -> None:
         """Accumulate a delta fragment; schedule a debounced flush (main thread)."""
         try:
+            live = self._live
+            if live is None:
+                return
             frag = str(fragment)
-            self._live_buffer += frag
-            self._live_streamed += frag
-            if not self._live_flush_pending:
-                self._live_flush_pending = True
+            live.buffer += frag
+            live.streamed += frag
+            if not live.flush_pending:
+                live.flush_pending = True
                 # ~4 pastes/sec — fast enough to look live, slow enough that the
                 # target app consumes each clipboard write before the next.
                 self.performSelector_withObject_afterDelay_("flushLive:", None, 0.25)
@@ -557,13 +575,16 @@ class App(AppKit.NSObject):
         beyond what the deltas already streamed (e.g. the final period), then
         flush. Resets the per-utterance streamed tracker."""
         try:
+            live = self._live
+            if live is None:
+                return
             final = str(text)
-            streamed = self._live_streamed
-            self._live_streamed = ""
+            streamed = live.streamed
+            live.streamed = ""
             if streamed and final.startswith(streamed):
                 suffix = final[len(streamed):]
                 if suffix:
-                    self._live_buffer += suffix
+                    live.buffer += suffix
             self._flush_live(final=True)
         except Exception:
             log.exception("liveFinalize failed (recovered)")
@@ -581,21 +602,22 @@ class App(AppKit.NSObject):
         words (and no half word is ever pasted). A final flush (utterance
         completed / session died) pastes the remainder too.
         """
-        self._live_flush_pending = False
-        buf = self._live_buffer
+        live = self._live
+        if live is None:
+            return
+        live.flush_pending = False
+        buf = live.buffer
         if not buf:
             return
         if final:
-            out, self._live_buffer = buf, ""
+            out, live.buffer = buf, ""
         else:
             cut = buf.rfind(" ") + 1
-            out, self._live_buffer = buf[:cut], buf[cut:]
+            out, live.buffer = buf[:cut], buf[cut:]
             if not out:
                 return  # nothing complete yet — keep accumulating
-        if self._live is None:
-            return
         try:
-            self._live.paste(self.corrections.apply(out))
+            live.paster.paste(self.corrections.apply(out))
         except Exception:
             log.exception("live paste failed")
 
