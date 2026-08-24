@@ -99,7 +99,10 @@ class Corrections:
             return
         self._set([p for p in pairs if isinstance(p, dict)])
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        """Persist atomically. Returns False (and logs) on write failure so
+        the caller can surface it — silent loss of edits is worse than a disk
+        error the user can act on."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(".json.tmp")
@@ -108,8 +111,10 @@ class Corrections:
                 encoding="utf-8",
             )
             tmp.replace(self._path)  # atomic on the same directory
+            return True
         except Exception:
             log.exception("failed to save corrections to %s", self._path)
+            return False
 
     # -- the pair list ---------------------------------------------------------
 
@@ -117,11 +122,12 @@ class Corrections:
     def pairs(self) -> list[dict]:
         return self._pairs
 
-    def set_pairs(self, rows: list[dict]) -> None:
+    def set_pairs(self, rows: list[dict]) -> bool:
         """Clean + persist the editor's rows. Empty 'from' rows are kept out
-        of the matcher (the editor may still show them mid-editing)."""
+        of the matcher (the editor may still show them mid-editing). Returns
+        the save() result so the editor can alert on a failed write."""
         self._set(rows)
-        self.save()
+        return self.save()
 
     def _set(self, rows: list[dict]) -> None:
         cleaned: list[dict] = []

@@ -3,8 +3,9 @@
 One row per rule: a normal system text field "heard as" → a normal system
 text field "replace with", a − button to drop the row, + to add one. Editing
 is a plain NSTextField (click and type — no table cell machinery, no edit
-sessions to get cancelled). Every change persists immediately (atomic save),
-so there is no Save button to forget.
+sessions to get cancelled). Edits are persisted atomically on close/Done
+(commit points), not on every keystroke — so the matcher isn't recompiled
+and the file rewritten per field edit.
 
 "Paste List…" opens a sheet for bulk entry: paste the mis-heard words into
 the left list and the replacements into the right one — line N pairs with
@@ -30,6 +31,13 @@ import objc
 from .corrections import merge_into, parse_pairs_text
 
 log = logging.getLogger("listen")
+
+
+def _alert(title: str, message: str) -> None:
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setMessageText_(title)
+    alert.setInformativeText_(message)
+    alert.runModal()
 
 _WIN_W = 540
 _WIN_H = 470
@@ -78,6 +86,7 @@ class CorrectionsWindow(AppKit.NSWindow):
         self._rows: list[dict] = []
         self._row_fields: list[tuple] = []  # (left NSTextField, right) per row
         self._build()
+        self.setDelegate_(self)  # windowWillClose_ is the single commit point
         self.center()
         return self
 
@@ -156,10 +165,23 @@ class CorrectionsWindow(AppKit.NSWindow):
             self._rebuild_rows()
 
     @objc.python_method
-    def _push(self) -> None:
-        """Persist the current rows (a cleaned copy) into the dictionary."""
-        if self._corrections is not None:
-            self._corrections.set_pairs(self._rows)
+    def _push(self) -> bool:
+        """Persist the current rows (a cleaned copy) into the dictionary.
+
+        A commit point: called on close/Done and on import/export, not on
+        every field edit. Returns False (and alerts) if the write failed,
+        so a read-only ~/.listen doesn't silently drop the user's edits.
+        """
+        if self._corrections is None:
+            return True
+        if not self._corrections.set_pairs(self._rows):
+            _alert(
+                "Could not save Auto-Replace",
+                "Your edits weren't written to disk. Check that ~/.listen "
+                "is writable and try again.",
+            )
+            return False
+        return True
 
     # -- the row list -----------------------------------------------------------
 
@@ -254,7 +276,6 @@ class CorrectionsWindow(AppKit.NSWindow):
         try:
             self._sync_from_fields()
             self._rows.append({"from": "", "to": ""})
-            self._push()
             self._rebuild_rows()
             self._scroll_to_bottom()
             # Focus the new left field on the next run-loop turn (changing
@@ -279,18 +300,22 @@ class CorrectionsWindow(AppKit.NSWindow):
             self._sync_from_fields()
             if 0 <= i < len(self._rows):
                 del self._rows[i]
-            self._push()
             self._rebuild_rows()
         except Exception:
             log.exception("corrections removeRow failed (recovered)")
 
     def doneAction_(self, _sender) -> None:
+        # Closing persists (windowWillClose_); Done is just one close path.
+        self.performClose_(None)
+
+    def windowWillClose_(self, _notification) -> None:
+        """Single commit point: every close path (Done, ⌘W, red button)
+        lands here. Sync the live fields and persist once."""
         try:
             self._sync_from_fields()
             self._push()
-            self.performClose_(None)
         except Exception:
-            log.exception("corrections done failed (recovered)")
+            log.exception("corrections close failed (recovered)")
 
     # -- export / import ------------------------------------------------------------
 
@@ -442,11 +467,9 @@ class CorrectionsWindow(AppKit.NSWindow):
                     while j >= len(self._rows):
                         self._rows.append({"from": "", "to": ""})
                     self._rows[j]["to"] = value
-            self._push()
-            # NOTE: _rows stays as-is (not re-read from the store) — an
-            # overflow right-paste creates empty-left rows that set_pairs
-            # keeps out of the matcher/file; the editor shows them until
-            # they get a left side or are deleted.
+            # _rows stays as-is — an overflow right-paste creates empty-left
+            # rows that the editor shows until they get a left side or are
+            # deleted; they're kept out of the saved store on close (cleaned).
             self._rebuild_rows()
             self._scroll_to_bottom()
             self._focus_after = (i, 0 if side == "from" else 1)
@@ -658,7 +681,8 @@ class CorrectionsWindow(AppKit.NSWindow):
     # -- field delegate -----------------------------------------------------------
 
     def controlTextDidEndEditing_(self, notification) -> None:
-        """A field lost focus (Tab, Enter, click elsewhere) — persist."""
+        """A field lost focus (Tab, Enter, click elsewhere). We just keep the
+        working copy in sync — persistence happens once, on close/Done."""
         try:
             field = notification.object()
             # A rebuild (list paste / row removal) unmounts fields; their
@@ -671,7 +695,6 @@ class CorrectionsWindow(AppKit.NSWindow):
             i = int(i)
             if side in ("from", "to") and 0 <= i < len(self._rows):
                 self._rows[i][side] = str(field.stringValue())
-                self._push()
         except Exception:
             log.exception("corrections endEdit failed (recovered)")
 
