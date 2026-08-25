@@ -1,18 +1,67 @@
-# build artifacts
+# --- Python ---
+*.pyc
+*.pyo
+__pycache__/
+*.egg-info/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Virtual env ---
+.venv/
+venv/
+
+# --- Build / packaging ---
 build/
 dist/
-*.pyc
-__pycache__/
-.pytest_cache/
+*.app
+*.dmg
+*.zip
 
-# environment
-.venv/
-
-# local state
+# --- macOS ---
 .DS_Store
-.claude/
-*.log
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Icon?
 
-# generated reports
+# --- Editor / IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Secrets / local config (never publish) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+*.p12
+
+# --- Logs / Claude Code local state ---
+*.log
+.claude/
+
+# --- Model artifacts (the 700 MB model lives in ~/.listen, never in the repo) ---
+*.gguf
+*.gguf.part
+*.gguf.ok
+
+# --- Generated reports / pilot output ---
 scripts/pilot-out/
 scripts/packs-out/
+
+# --- Internal dev notes (candid complexity audit — keep local) ---
+complexity-audit.md
