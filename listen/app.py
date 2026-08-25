@@ -964,3 +964,19 @@ class App(AppKit.NSObject):
 
     def openLog_(self, sender) -> None:
         subprocess.Popen(["open", "-t", str(config.LOG_PATH)])
+
+    def aboutAction_(self, _sender) -> None:
+        try:
+            alert = AppKit.NSAlert.alloc().init()
+            alert.setMessageText_(f"Listen {config.APP_VERSION}")
+            alert.setInformativeText_(
+                "Free, offline speech-to-text — no account, no payment, ever.\n\n"
+                "If it's useful, support development:\n"
+                + config.COFFEE_URL.replace("https://", "")
+            )
+            alert.addButtonWithTitle_("Buy me a coffee ☕")
+            alert.addButtonWithTitle_("Close")
+            if alert.runModal() == AppKit.NSAlertFirstButtonReturn:
+                subprocess.Popen(["open", config.COFFEE_URL])
+        except Exception:
+            log.exception("about failed (recovered)")

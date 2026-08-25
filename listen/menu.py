@@ -39,6 +39,7 @@ def rebuild(menu, target, snap: dict) -> None:
     _autostart_item(menu, target, snap)
 
     _separator(menu)
+    _item(menu, "About Listen…", "aboutAction:", target)
     _item(menu, "Quit Listen", "terminate:", key="q")
 
 

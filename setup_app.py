@@ -10,6 +10,8 @@ from pathlib import Path
 
 from setuptools import setup
 
+from listen import config
+
 # Ship the bundled nemo-speech binary + dylibs into Contents/Resources/nemo-speech/
 NEMO_DIR = Path(__file__).parent / "listen" / "resources" / "nemo-speech"
 
@@ -19,8 +21,8 @@ PLIST = {
     "CFBundleIdentifier": "com.valentyn.listen",
     "CFBundleExecutable": "run",
     "CFBundlePackageType": "APPL",
-    "CFBundleShortVersionString": "0.3.0",
-    "CFBundleVersion": "0.3.0",
+    "CFBundleShortVersionString": config.APP_VERSION,
+    "CFBundleVersion": config.APP_VERSION,
     "LSUIElement": True,  # menu-bar-only, no Dock icon
     "LSMinimumSystemVersion": "13.0",
     "NSMicrophoneUsageDescription": "Listen records the microphone to transcribe speech to text.",

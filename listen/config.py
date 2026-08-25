@@ -7,6 +7,9 @@ from pathlib import Path
 
 # --- engine / model ----------------------------------------------------------
 
+APP_VERSION = "0.3.0"
+COFFEE_URL = "https://buymeacoffee.com/skindar"
+
 MODEL_REPO = "nvidia/nemotron-3.5-asr-streaming-0.6b"
 # The official HF repo ships this single Q8_0 GGUF (≈707 MB). The model
 # auto-detects 40 language-locales, so there is no language setting.
