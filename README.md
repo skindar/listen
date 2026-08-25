@@ -1,12 +1,11 @@
 # listen
 
-**Free, offline speech-to-text. It will never ask you for money.**
+**Free, offline speech-to-text. **
 
 Press a key. Talk. Text appears at your cursor. That is the whole app.
 
 Listen runs entirely on your Mac — no cloud, no account, no telemetry, no
 subscription. A speech model is downloaded once and lives on your disk.
-After that it works on a plane, in a basement, behind a firewall, forever.
 
 ## The promise
 
@@ -21,18 +20,12 @@ After that it works on a plane, in a basement, behind a firewall, forever.
 2. Speak.
 3. Press **right Option** again — text is typed into whatever field is focused.
 
-The language is detected automatically (40 locales, including Russian and
-English). Clicking the menu-bar icon opens the whole UI: change the hotkey,
+The language is detected automatically (40 locales). Clicking the menu-bar icon opens the whole UI: change the hotkey,
 pin the language (32 locales), or toggle Start at Login.
 
 ## Install
 
-```bash
-brew tap valentyn/listen
-brew install --cask listen
-```
-
-Or build from source:
+Download DMG file via github release
 
 ```bash
 git clone https://github.com/valentyn/listen && cd listen
