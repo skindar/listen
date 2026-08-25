@@ -7,7 +7,7 @@ from pathlib import Path
 
 # --- engine / model ----------------------------------------------------------
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 COFFEE_URL = "https://buymeacoffee.com/skindar"
 
 MODEL_REPO = "nvidia/nemotron-3.5-asr-streaming-0.6b"

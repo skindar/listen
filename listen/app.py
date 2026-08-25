@@ -336,39 +336,60 @@ class App(AppKit.NSObject):
             return
         rt: RealtimeClient | None = None
         streaming = False
-        try:
-            rt = RealtimeClient(
-                config.HOST, self.server.port,
-                language=self.settings.language,
-                on_delta=self._on_realtime_delta,
-                on_final=self._on_realtime_final,
-                on_dead=self._on_realtime_dead,
-                endpointing_ms=config.ENDPOINTING_MS,
-            )
-            rt.connect(timeout=3)
-            # on_dead can fire during connect; treat a session that's already
-            # gone as a connect failure (fall back to batch) instead of arming
-            # a recording into a dead client.
-            if not rt.is_alive:
-                rt.close()
-                rt = None
-            else:
-                streaming = True
-        except Exception:
-            log.warning("realtime session unavailable — batch fallback", exc_info=True)
+        # A freshly started nemo-speech accepts the WS handshake but lets the
+        # FIRST realtime session die (session.created never arrives within the
+        # timeout). The second connect always succeeds — same reason the
+        # mid-recording reconnect works. So retry transparently here instead of
+        # bouncing the user out to "press again" on every cold start.
+        #
+        # `self._recording` is the real stop signal here: a press while the
+        # worker is warming up routes through _stop_recording (which flips it
+        # False and stops the mic). Bail if that happens so we never re-arm a
+        # recording the user already released.
+        stopped = False
+        for attempt in range(1, 4):
+            if self._cancel_requested or not self._recording:
+                stopped = True
+                break
+            rt = None
+            try:
+                rt = RealtimeClient(
+                    config.HOST, self.server.port,
+                    language=self.settings.language,
+                    on_delta=self._on_realtime_delta,
+                    on_final=self._on_realtime_final,
+                    on_dead=self._on_realtime_dead,
+                    endpointing_ms=config.ENDPOINTING_MS,
+                )
+                rt.connect(timeout=3)
+                # on_dead can fire during the handshake; treat a session that's
+                # already gone as a connect failure and retry instead of arming
+                # a recording into a dead client.
+                if rt.is_alive:
+                    streaming = True
+                    break
+            except Exception:
+                log.warning("realtime connect attempt %d/3 failed", attempt, exc_info=True)
             if rt is not None:
                 rt.close()
-            rt = None
-            streaming = False
-        if not streaming:
-            # The realtime WS session won't open — the server is cold-starting
-            # (it reports HTTP /ready but the realtime WS needs a moment to warm
-            # up). Stop and tell the user to press again; the server warms
-            # during this attempt and the second one works.
+                rt = None
+            if attempt < 3 and self._recording and not self._cancel_requested:
+                time.sleep(0.4)
+        if stopped or not streaming:
+            if rt is not None:
+                rt.close()
+            # The mic may already be stopped (user hit stop → _stop_recording);
+            # recorder.stop() is idempotent. Either way, don't arm a recording.
             self.recorder.stop()
-            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "startFailed:", None, False
-            )
+            if stopped:
+                # User released during warmup — clean up silently, no "press again".
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "startCancelled:", None, False
+                )
+            else:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "startFailed:", None, False
+                )
             return
         # Order matters: set the session fields before _recording flips True so a
         # reader that sees _recording also sees the rest (GIL barrier).
@@ -376,6 +397,12 @@ class App(AppKit.NSObject):
         self._streaming = streaming
         self._rec_start = time.time()
         self._reconnects = 0
+        # Re-confirm the user is still holding the hotkey right before arming — a
+        # stop that raced in between the last loop check and here must not arm.
+        if not self._recording:
+            rt.close()
+            self.recorder.stop()
+            return
         self._recording = True
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "recordingStarted:", None, False
