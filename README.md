@@ -39,6 +39,26 @@ and **Microphone** — grant them once. Listen waits politely (⚠ icon + a menu
 link to the right settings pane) and picks a grant up the moment you give it,
 no restart. A monochrome mic icon appears in the menu bar. That's it.
 
+### If macOS blocks the app on first launch
+
+Because Listen is distributed outside the Mac App Store, Gatekeeper may show
+*"Listen was blocked to protect your Mac"* on first launch. This is expected —
+a one-time confirmation, not a malware warning.
+
+1. Open **System Settings → Privacy & Security** (scroll down past the toggle list).
+2. Next to *"Listen was blocked to protect your Mac"*, click **Open Anyway** and confirm with your password / Touch ID.
+
+![Open Anyway button in Privacy & Security](security.png)
+
+After that, Listen launches normally from then on.
+
+### Support
+
+Listen is and will remain free. The Apple Developer Program costs $99/year
+to keep distributing it outside the App Store — if you'd like to chip in:
+
+☕ [**buymeacoffee.com/skindar**](https://buymeacoffee.com/skindar)
+
 ## Why
 
 On-device speech recognition is a solved, open problem — the models are free
