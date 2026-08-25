@@ -293,6 +293,8 @@ class App(AppKit.NSObject):
                 return  # not ready yet — ignore politely
             self._cancel_requested = False
             self._starting = True
+            self._recording = True  # instant: red dot the moment the hotkey fires
+            self._set_base(st.RECORDING)
             threading.Thread(target=self._start_recording_async, daemon=True).start()
         except Exception:
             log.exception("error in toggleRecording (recovered)")
@@ -343,7 +345,7 @@ class App(AppKit.NSObject):
                 on_dead=self._on_realtime_dead,
                 endpointing_ms=config.ENDPOINTING_MS,
             )
-            rt.connect(timeout=5)
+            rt.connect(timeout=3)
             # on_dead can fire during connect; treat a session that's already
             # gone as a connect failure (fall back to batch) instead of arming
             # a recording into a dead client.
@@ -359,10 +361,15 @@ class App(AppKit.NSObject):
             rt = None
             streaming = False
         if not streaming:
-            # The recorder started in streaming mode (frames went to the audio
-            # callback, which dropped them while _realtime was None). Switch it
-            # to batch buffering so stop() returns a WAV for the batch path.
-            self.recorder.switch_to_batch()
+            # The realtime WS session won't open — the server is cold-starting
+            # (it reports HTTP /ready but the realtime WS needs a moment to warm
+            # up). Stop and tell the user to press again; the server warms
+            # during this attempt and the second one works.
+            self.recorder.stop()
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "startFailed:", None, False
+            )
+            return
         # Order matters: set the session fields before _recording flips True so a
         # reader that sees _recording also sees the rest (GIL barrier).
         self._realtime = rt
@@ -401,6 +408,20 @@ class App(AppKit.NSObject):
             self._set_base(st.READY)
         except Exception:
             log.exception("error in startCancelled (recovered)")
+
+    def startFailed_(self, _sender) -> None:
+        """The realtime WS session won't open — the server is cold-starting.
+        Stop and tell the user to press again; the server warms during this
+        attempt and the second one works."""
+        try:
+            if not self._recording:
+                return  # stop already tore it down
+            self._starting = False
+            self._recording = False
+            self._set_note("Server warming up — press the hotkey again")
+            self._set_base(st.READY)
+        except Exception:
+            log.exception("error in startFailed (recovered)")
 
     @objc.python_method
     def _on_audio_frame(self, pcm: bytes) -> None:
