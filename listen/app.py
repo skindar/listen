@@ -421,6 +421,7 @@ class App(AppKit.NSObject):
         streaming = self._streaming
         self._realtime = None
         self._streaming = False
+        self._cancel_pause_flush()  # don't let a late pause flush fire after teardown
         try:
             # Closing the mic is the one thing that must always happen first,
             # so the system mic indicator clears even if transcription fails.
@@ -590,6 +591,7 @@ class App(AppKit.NSObject):
         rt = self._realtime
         self._realtime = None
         self._streaming = False
+        self._cancel_pause_flush()
         try:
             self.recorder.stop()
             self._maybe_recover_mic()
@@ -636,7 +638,12 @@ class App(AppKit.NSObject):
         os._exit(0)
 
     def liveDelta_(self, fragment) -> None:
-        """Accumulate a delta fragment; schedule a debounced flush (main thread)."""
+        """Accumulate a delta fragment; schedule a debounced flush (main thread).
+
+        Also arm a pause flush: if no delta arrives for the endpointing
+        window, the user has paused — paste the words held back so far
+        (the server only finalizes on commit, not on a mid-dictation pause,
+        so without this the last words only appear when the user stops)."""
         try:
             live = self._live
             if live is None:
@@ -649,8 +656,28 @@ class App(AppKit.NSObject):
                 # ~4 pastes/sec — fast enough to look live, slow enough that the
                 # target app consumes each clipboard write before the next.
                 self.performSelector_withObject_afterDelay_("flushLive:", None, 0.25)
+            # A pause (no delta for the endpointing window) → paste the held
+            # words. Reset the timer on each delta so it fires after the LAST.
+            self._cancel_pause_flush()
+            self.performSelector_withObject_afterDelay_(
+                "pauseFlush:", None, config.ENDPOINTING_MS / 1000.0
+            )
         except Exception:
             log.exception("liveDelta failed (recovered)")
+
+    def pauseFlush_(self, _sender) -> None:
+        """Fired ENDPOINTING_MS after the last delta: the user paused — paste
+        the words held back so far (without stopping the mic)."""
+        try:
+            self._flush_live(final=True)
+        except Exception:
+            log.exception("pauseFlush failed (recovered)")
+
+    @objc.python_method
+    def _cancel_pause_flush(self) -> None:
+        AppKit.NSObject.cancelPreviousPerformRequestsWithTarget_selector_object_(
+            self, "pauseFlush:", None
+        )
 
     def liveFinalize_(self, text) -> None:
         """A `.completed` arrived: paste any trailing suffix the finalize added
