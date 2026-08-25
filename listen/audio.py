@@ -60,6 +60,15 @@ class Recorder:
         )
         self._stream.start()
 
+    def switch_to_batch(self) -> None:
+        """Switch a streaming-mode recorder to batch buffering mid-stream:
+        frames append to the buffer instead of going to on_frame. Used by the
+        start worker when the realtime session fails to open after the mic
+        already started (the recorder started in streaming mode so the macOS
+        mic-permission dialog appeared the instant the hotkey was pressed)."""
+        self._on_frame = None
+        self._frames = []
+
     def _callback(self, indata, frames, time_info, status) -> None:
         # PortAudio audio thread. MUST NOT raise: an escaped exception is not
         # under the app run loop and aborts the process. Swallow + log once.

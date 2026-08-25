@@ -310,10 +310,28 @@ class App(AppKit.NSObject):
 
     @objc.python_method
     def _start_recording_async(self) -> None:
-        # Worker thread: the blocking I/O (rt.connect, recorder.start / the mic
-        # TCC prompt) MUST NOT run on the main run loop — blocking it lets macOS
-        # disable the CGEventTap so the hotkey stops firing. UI/clipboard work
-        # hops back to main (recordingStarted_).
+        # Worker thread: open the mic FIRST so the macOS mic-permission dialog
+        # appears the instant the hotkey is pressed (not after the realtime
+        # session opens, which was the ~1 s delay). Then open the realtime
+        # session. The audio callback drops frames until _realtime is set
+        # (silence, usually — the user is still reading the dialog).
+        try:
+            self.recorder.start(on_frame=self._on_audio_frame)
+        except Exception:
+            log.exception("microphone unavailable")
+            self.recorder.stop()  # idempotent — release any half-open stream
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micDenied:", None, False
+            )
+            return
+        if self._cancel_requested:
+            # The user pressed stop during the TCC prompt — tear it down without
+            # ever arming a recording.
+            self.recorder.stop()
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "startCancelled:", None, False
+            )
+            return
         rt: RealtimeClient | None = None
         streaming = False
         try:
@@ -340,30 +358,11 @@ class App(AppKit.NSObject):
                 rt.close()
             rt = None
             streaming = False
-        try:
-            # Frames go through an indirection, not straight into rt.feed: a
-            # mid-recording reconnect swaps self._realtime, and the recorder's
-            # callback must follow the swap without being restarted.
-            self.recorder.start(on_frame=self._on_audio_frame if streaming else None)
-        except Exception:
-            log.exception("microphone unavailable")
-            self.recorder.stop()  # idempotent — release any half-open stream first
-            if rt is not None:
-                rt.close()
-            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "micDenied:", None, False
-            )
-            return
-        if self._cancel_requested:
-            # The user pressed stop during the TCC prompt — tear it down without
-            # ever arming a recording.
-            self.recorder.stop()
-            if rt is not None:
-                rt.close()
-            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "startCancelled:", None, False
-            )
-            return
+        if not streaming:
+            # The recorder started in streaming mode (frames went to the audio
+            # callback, which dropped them while _realtime was None). Switch it
+            # to batch buffering so stop() returns a WAV for the batch path.
+            self.recorder.switch_to_batch()
         # Order matters: set the session fields before _recording flips True so a
         # reader that sees _recording also sees the rest (GIL barrier).
         self._realtime = rt
