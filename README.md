@@ -28,7 +28,7 @@ pin the language (32 locales), or toggle Start at Login.
 Download DMG file via github release
 
 ```bash
-git clone https://github.com/valentyn/listen && cd listen
+git clone https://github.com/skindar/listen && cd listen
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m listen          # first run downloads the model (707 MB, one-time)
 .venv/bin/python setup_app.py py2app  # build dist/Listen.app

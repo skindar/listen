@@ -63,5 +63,6 @@ credentials.json
 scripts/pilot-out/
 scripts/packs-out/
 
-# --- Internal dev notes (candid complexity audit — keep local) ---
+# --- Internal dev notes (candid planning/audit — keep local) ---
 complexity-audit.md
+publish.md
