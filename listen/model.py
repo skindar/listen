@@ -156,6 +156,14 @@ def download(progress=None, cancel=None, max_retries: int = 5) -> Path:
                             next_report = (downloaded * 100 // total + 1) * total // 100
                         else:
                             next_report = downloaded + (4 << 20)
+                if total is not None and downloaded < total:
+                    # The server closed the connection before Content-Length
+                    # was reached. EOF alone is not completion: renaming a
+                    # truncated file into place would fail sha256 later, so
+                    # treat it as an interrupted (resumable) download.
+                    raise urllib.error.URLError(
+                        f"connection closed early: got {downloaded} of {total} bytes"
+                    )
             break  # completed
         except Cancelled:
             part.unlink(missing_ok=True)

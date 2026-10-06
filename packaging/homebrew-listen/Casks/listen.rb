@@ -2,8 +2,8 @@
 # Repo layout for the tap:  homebrew-listen/Casks/listen.rb
 # Install with:  brew tap skindar/listen && brew install --cask listen
 cask "listen" do
-  version "0.3.0"
-  sha256 "3492c3833bf21a55ab22cd4c931459e8fceb9d4e3b174c5b4c8044cc6eb4507a"
+  version "0.3.2"
+  sha256 "0b5e5d73bdd84ea6beae85c8c90708fbf523d672ba1374e3133d0504cbdebc23"
 
   url "https://github.com/skindar/listen/releases/download/v#{version}/Listen-#{version}.dmg",
       verified: "github.com/skindar/listen/releases/download/"

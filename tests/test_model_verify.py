@@ -134,3 +134,24 @@ def test_download_raises_after_max_retries(tmp_path, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     with pytest.raises(RuntimeError, match="retries"):
         model.download()
+
+
+def test_download_truncated_connection_retries(tmp_path, monkeypatch):
+    """EOF before Content-Length is an interrupted download: retried with a
+    Range resume, never renamed into place (that file would fail sha256)."""
+    _patch_paths(tmp_path, monkeypatch)
+    truncated = _FakeResp([b"A" * (1 << 20)], length=3 << 20)  # closes early
+    complete = _FakeResp([b"B" * (2 << 20)], length=2 << 20, status=206)
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=60):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return truncated
+        assert req.headers.get("Range") == f"bytes={1 << 20}-"
+        return complete
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    model.download()
+    assert (tmp_path / "m.gguf").read_bytes() == b"A" * (1 << 20) + b"B" * (2 << 20)
+    assert calls["n"] == 2
